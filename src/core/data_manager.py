@@ -15,7 +15,7 @@ import io
 import logging
 import zipfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -173,11 +173,17 @@ class DataManager:
         tr["timestamp"] = pd.to_datetime(tr["time"], unit="ms", utc=True)
         for c in ("price", "qty"):
             tr[c] = pd.to_numeric(tr[c], errors="coerce")
-        # is_buyer_maker is a stringified boolean in Binance CSVs.
+        # is_buyer_maker is a stringified boolean in Binance CSVs. If the
+        # column is absent (some aggTrades exports), default to "unknown
+        # aggressor" = treat as buyer-taker so signed_qty still exists.
         if "is_buyer_maker" in tr.columns:
             tr["is_buyer_maker"] = tr["is_buyer_maker"].astype(str).str.lower().isin(
                 ["true", "1", "t", "yes"]
             )
+        else:
+            logger.warning("is_buyer_maker missing for %s - defaulting aggressor side",
+                           self.pair)
+            tr["is_buyer_maker"] = False
         tr = tr.dropna(subset=["price", "qty"])
         tr = tr.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
         # Signed trade volume: +qty when buyer is taker, -qty when seller is taker.

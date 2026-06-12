@@ -83,7 +83,8 @@ class BacktestEngine:
             classes = list(model.classes_)
             try:
                 up_idx, dn_idx = classes.index(1), classes.index(-1)
-                conf_up = proba[:, up_idx]; conf_dn = proba[:, dn_idx]
+                conf_up = proba[:, up_idx]
+                conf_dn = proba[:, dn_idx]
                 signal = np.where(conf_up > self.cfg.backtest.signal_threshold, 1,
                           np.where(conf_dn > self.cfg.backtest.signal_threshold, -1, 0))
             except ValueError:
@@ -110,14 +111,34 @@ class BacktestEngine:
             buy_flow = pd.Series(0.0, index=X_df.index)
             sell_flow = pd.Series(0.0, index=X_df.index)
 
-        # Latency: the signal at t is only actionable at t + latency.
-        if latency_ms > 0:
-            shift = max(1, int(np.ceil(latency_ms / 1000.0 *
-                                       (1.0 / pd.Timedelta(self.cfg.data.resample_freq).total_seconds()))))
-            signal = pd.Series(signal, index=X_df.index).shift(shift).fillna(0).astype(int).to_numpy()
+        period_seconds = pd.Timedelta(self.cfg.data.resample_freq).total_seconds()
+
+        # Latency model (two compounding effects):
+        #  1. signal delay in *whole* bars - sub-bar latency does NOT collapse
+        #     to a full bar anymore (the old max(1, ...) made every latency
+        #     below the bar size identical);
+        #  2. adverse entry slippage proportional to latency (the dominant
+        #     effect for sub-bar HFT latencies);
+        #  3. a queue-growth penalty (more flow reaches the book ahead of us
+        #     while our order is in flight) that degrades the fill rate.
+        bars_shift = int(latency_ms / 1000.0 / max(period_seconds, 1e-9))
+        if bars_shift > 0:
+            signal = (pd.Series(signal, index=X_df.index)
+                      .shift(bars_shift).fillna(0).astype(int).to_numpy())
+        entry_slip = latency_ms * self.cfg.backtest.latency_slippage_bps_per_ms / 1e4
+        queue_latency_factor = 1.0 + latency_ms / 1000.0  # +1 queue/s of latency
 
         ts_index = X_df.index
         mid = X_df["mid_price"].to_numpy(dtype=np.float64)
+        # Side prices reconstructed from the half-spread. All P&L, marking and
+        # SL/TP triggers use the price consistent with the position's exit
+        # side, so a passive fill never books a fictitious half-spread profit.
+        half_spread = 0.5 * X_df["spread_norm"].to_numpy()
+        bid_arr = mid * (1.0 - half_spread)
+        ask_arr = mid * (1.0 + half_spread)
+        # Real displayed Top-of-Book volume sitting in front of our order.
+        bid_qty_arr = X_df["bid_qty"].to_numpy(dtype=np.float64)
+        ask_qty_arr = X_df["ask_qty"].to_numpy(dtype=np.float64)
 
         equity = np.empty(len(ts_index), dtype=np.float64)
         inventory = np.zeros(len(ts_index), dtype=np.float64)
@@ -136,16 +157,24 @@ class BacktestEngine:
         queue_ahead = 0.0
         pending_side = 0  # +1 buy limit, -1 sell limit, 0 none
 
-        bid_arr = X_df["mid_price"].to_numpy() * (1 - 0.5 * X_df["spread_norm"].to_numpy())
-        ask_arr = X_df["mid_price"].to_numpy() * (1 + 0.5 * X_df["spread_norm"].to_numpy())
+        bv = buy_flow.to_numpy()
+        sv = sell_flow.to_numpy()
 
-        bv = buy_flow.to_numpy(); sv = sell_flow.to_numpy()
+        def _submit(side: int, i: int) -> float:
+            """Queue position = real displayed volume on our side, inflated by
+            the latency-driven queue-growth factor. Returns the queue size."""
+            displayed = bid_qty_arr[i] if side == 1 else ask_qty_arr[i]
+            return float(displayed) * queue_latency_factor
 
         for i in range(len(ts_index)):
-            px = mid[i]
-            hi = px if i == 0 else max(px, mid[i - 1])
-            lo = px if i == 0 else min(px, mid[i - 1])
             sig = int(signal[i])
+            # Exit-side price ranges over the bar (worst-case intrabar proxy).
+            if pos.qty > 0:  # long exits by selling at the bid
+                side_px = bid_arr
+            else:            # short exits by buying at the ask
+                side_px = ask_arr
+            hi = side_px[i] if i == 0 else max(side_px[i], side_px[i - 1])
+            lo = side_px[i] if i == 0 else min(side_px[i], side_px[i - 1])
 
             # ---- Manage open position first (worst-case SL/TP) -------- #
             if pos.qty != 0.0:
@@ -165,6 +194,7 @@ class BacktestEngine:
                     exit_price = pos.take_price
 
                 if exit_price is not None:
+                    # Aggressive exit -> taker fee.
                     pnl = pos.qty * (exit_price - pos.entry_price)
                     fee = abs(pos.qty) * exit_price * taker_fee
                     cash += pnl - fee
@@ -175,8 +205,13 @@ class BacktestEngine:
                 consumed = bv[i] if pending_side == 1 else sv[i]
                 queue_ahead -= consumed
                 if queue_ahead <= 0:
-                    # Order filled at the limit price (passive => maker fee).
-                    limit_price = bid_arr[i] if pending_side == 1 else ask_arr[i]
+                    # Passive fill at the displayed limit price (maker fee),
+                    # worsened by latency-driven adverse slippage.
+                    base_price = bid_arr[i] if pending_side == 1 else ask_arr[i]
+                    if pending_side == 1:
+                        limit_price = base_price * (1.0 + entry_slip)
+                    else:
+                        limit_price = base_price * (1.0 - entry_slip)
                     qty = max_pos * pending_side
                     fee = abs(qty) * limit_price * maker_fee
                     cash -= fee
@@ -191,24 +226,28 @@ class BacktestEngine:
                     pending_side = 0
                     queue_ahead = 0.0
 
-            # ---- New signal: post a passive limit order -------------- #
-            if pos.qty == 0.0 and pending_side == 0 and sig != 0:
-                pending_side = sig
-                # Queue position behind the displayed volume on our side.
-                queue_ahead = float(
-                    X_df["ofi_roll_mean"].iloc[i] if "ofi_roll_mean" in X_df.columns else 0.0
-                )
-                queue_ahead = abs(queue_ahead) + max_pos  # safe lower bound
-                orders_submitted += 1
+            # ---- Signal handling: post / re-post a passive limit ------ #
+            if sig != 0 and pos.qty == 0.0:
+                if pending_side == 0:
+                    pending_side = sig
+                    queue_ahead = _submit(sig, i)
+                    orders_submitted += 1
+                elif sig != pending_side:
+                    # Signal flipped before fill: cancel and re-post the
+                    # other side (counts as a single new submission).
+                    pending_side = sig
+                    queue_ahead = _submit(sig, i)
+                    orders_submitted += 1
 
-            # If signal flips before fill, cancel and try the other side.
-            if pending_side != 0 and sig != 0 and sig != pending_side:
-                pending_side = sig
-                queue_ahead = max_pos
-                orders_submitted += 1
-
+            # ---- Mark-to-market on the position's exit side ----------- #
+            if pos.qty > 0:
+                mark = bid_arr[i]
+            elif pos.qty < 0:
+                mark = ask_arr[i]
+            else:
+                mark = mid[i]
             inventory[i] = pos.qty
-            equity[i] = cash + pos.qty * px
+            equity[i] = cash + pos.qty * (mark - pos.entry_price) if pos.qty != 0.0 else cash
 
         equity_curve = pd.Series(equity, index=ts_index, name="equity")
         inv_series = pd.Series(inventory, index=ts_index, name="inventory")
@@ -217,9 +256,8 @@ class BacktestEngine:
         idle_pct = float((inv_series == 0).mean())
         fill_rate = float(orders_filled / orders_submitted) if orders_submitted else 0.0
 
-        # Annualisation factor = bars per year for the chosen resample_freq.
-        period_seconds = pd.Timedelta(self.cfg.data.resample_freq).total_seconds()
-        periods_per_year = int(252 * 24 * 3600 / max(period_seconds, 1))
+        # Crypto trades 365d/24h - annualise on calendar bars, not 252.
+        periods_per_year = int(365 * 24 * 3600 / max(period_seconds, 1))
         kpis = financial_kpis(returns, periods_per_year=periods_per_year)
         kpis.update({
             "fill_rate": fill_rate,

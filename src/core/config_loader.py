@@ -47,6 +47,7 @@ class BacktestCfg:
     take_profit_bps: float
     max_position: float
     signal_threshold: float
+    latency_slippage_bps_per_ms: float = 0.02
 
 
 @dataclass
@@ -102,6 +103,8 @@ class PipelineConfig:
             take_profit_bps=cfg.getfloat("BACKTEST", "take_profit_bps"),
             max_position=cfg.getfloat("BACKTEST", "max_position"),
             signal_threshold=cfg.getfloat("BACKTEST", "signal_threshold"),
+            latency_slippage_bps_per_ms=cfg.getfloat(
+                "BACKTEST", "latency_slippage_bps_per_ms", fallback=0.02),
         )
 
         report = ReportCfg(

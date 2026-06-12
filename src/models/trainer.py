@@ -15,7 +15,6 @@ from typing import Any, Dict, List
 
 import joblib
 import numpy as np
-import pandas as pd
 from sklearn.linear_model import RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from sklearn.model_selection import TimeSeriesSplit
@@ -108,7 +107,7 @@ class ModelTrainer:
             threshold_bps=self.cfg.model.threshold_alpha,
         )
         X_df, y = builder.build(tick_stream)
-        feature_cols = [c for c in X_df.columns if c != "mid_price"]
+        feature_cols = list(builder.FEATURE_COLUMNS)
         X = X_df[feature_cols].to_numpy(dtype=np.float64)
         y_arr = y.to_numpy(dtype=np.int8)
 

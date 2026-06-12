@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import joblib
 import matplotlib
@@ -115,16 +115,21 @@ class ModelEvaluator:
         fig, ax = plt.subplots(figsize=(6, 5))
         sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
                     xticklabels=classes, yticklabels=classes, ax=ax)
-        ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
         ax.set_title("Confusion Matrix")
-        fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
 
     @staticmethod
-    def _plot_rolling_finance(returns: pd.Series, out: Path) -> None:
+    def _plot_rolling_finance(returns: pd.Series, out: Path, ann_factor: float) -> None:
         fig, ax = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-        rolling_sharpe = (returns.rolling(3600).mean()
-                          / returns.rolling(3600).std()) * np.sqrt(252 * 24 * 3600)
-        rolling_ir = returns.rolling(3600).mean() / (returns.rolling(3600).std() + 1e-12)
+        win = max(2, min(3600, len(returns) // 4))
+        roll_mean = returns.rolling(win, min_periods=2).mean()
+        roll_std = returns.rolling(win, min_periods=2).std()
+        rolling_sharpe = (roll_mean / roll_std.replace(0.0, np.nan)) * np.sqrt(ann_factor)
+        rolling_ir = roll_mean / roll_std.replace(0.0, np.nan)
         ax[0].plot(rolling_sharpe.index, rolling_sharpe.values, color="steelblue")
         ax[0].set_ylabel("Rolling Sharpe (annualised)")
         ax[0].set_title("Cumulative finance diagnostics")
@@ -132,18 +137,23 @@ class ModelEvaluator:
         ax[1].plot(rolling_ir.index, rolling_ir.values, color="darkorange")
         ax[1].set_ylabel("Rolling Information Ratio")
         ax[1].grid(alpha=0.3)
-        fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
 
     @staticmethod
     def _plot_alpha_decay(decay: Dict[int, float], out: Path) -> None:
         fig, ax = plt.subplots(figsize=(7, 4.5))
-        xs = sorted(decay.keys()); ys = [decay[k] for k in xs]
+        xs = sorted(decay.keys())
+        ys = [decay[k] for k in xs]
         ax.plot(xs, ys, marker="o", color="firebrick")
         ax.set_xlabel("Forward horizon (ticks)")
         ax.set_ylabel("Predictive accuracy")
         ax.set_title("Alpha decay")
         ax.grid(alpha=0.3)
-        fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
 
     @staticmethod
     def _plot_latency_curve(df: pd.DataFrame, out: Path) -> None:
@@ -158,7 +168,9 @@ class ModelEvaluator:
                  color="darkorange", label="Fill Rate")
         ax2.set_ylabel("Fill Rate", color="darkorange")
         ax1.set_title("Latency stress test")
-        fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
 
     @staticmethod
     def _plot_inventory(inv: pd.Series, idle_pct: float, out: Path) -> None:
@@ -169,7 +181,9 @@ class ModelEvaluator:
         ax.set_title(f"Inventory tracking (idle time = {idle_pct:.1%})")
         ax.set_ylabel("Net position")
         ax.grid(alpha=0.3)
-        fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
 
     # ------------------------------------------------------------------ #
     # Core evaluation
@@ -201,7 +215,9 @@ class ModelEvaluator:
         log_ret = X_df["mid_return"].to_numpy()
         fwd_ret = pd.Series(log_ret).shift(-1).fillna(0.0).to_numpy()
         strat_ret = pd.Series(y_pred.astype(np.float64) * fwd_ret, index=X_df.index)
-        self._plot_rolling_finance(strat_ret, charts / "rolling_finance.png")
+        period_seconds = pd.Timedelta(self.cfg.data.resample_freq).total_seconds()
+        ann_factor = 365 * 24 * 3600 / max(period_seconds, 1)
+        self._plot_rolling_finance(strat_ret, charts / "rolling_finance.png", ann_factor)
 
         # ---- Alpha decay --------------------------------------------- #
         decay: Dict[int, float] = {}
@@ -267,33 +283,48 @@ class ModelEvaluator:
 # Public finance metric helpers used elsewhere (engine + UI).
 # We delegate to empyrical/quantstats when available.
 # ---------------------------------------------------------------------- #
-def financial_kpis(returns: pd.Series, periods_per_year: int = 252 * 24 * 3600) -> Dict[str, float]:
-    """Return Sharpe, Sortino, MaxDD, Profit Factor for a returns series."""
+def _finite(x: float) -> float:
+    """Coerce inf / NaN to 0.0 so KPIs stay JSON-serialisable and sane."""
+    return float(x) if np.isfinite(x) else 0.0
+
+
+def financial_kpis(returns: pd.Series, periods_per_year: int = 365 * 24 * 3600) -> Dict[str, float]:
+    """Return Sharpe, Sortino, MaxDD, Profit Factor for a returns series.
+
+    ``periods_per_year`` defaults to calendar-second bars (crypto trades
+    365d/24h). Non-finite results (e.g. zero-variance returns) are mapped
+    to 0.0 to keep the output stable and serialisable.
+    """
     if returns is None or len(returns) == 0:
         return {"sharpe": 0.0, "sortino": 0.0, "max_drawdown": 0.0, "profit_factor": 0.0}
 
     r = returns.dropna().astype(float)
+    if r.std(ddof=1) == 0 or len(r) < 2:
+        # No dispersion -> Sharpe/Sortino undefined; report zeros.
+        return {"sharpe": 0.0, "sortino": 0.0, "max_drawdown": 0.0, "profit_factor": 0.0}
+
     if _HAS_EMPYRICAL:
-        sharpe = float(emp.sharpe_ratio(r, annualization=periods_per_year))
-        sortino = float(emp.sortino_ratio(r, annualization=periods_per_year))
-        max_dd = float(emp.max_drawdown(r))
+        sharpe = emp.sharpe_ratio(r, annualization=periods_per_year)
+        sortino = emp.sortino_ratio(r, annualization=periods_per_year)
+        max_dd = emp.max_drawdown(r)
     elif _HAS_QS:
-        sharpe = float(qs.stats.sharpe(r))
-        sortino = float(qs.stats.sortino(r))
-        max_dd = float(qs.stats.max_drawdown(r))
+        sharpe = qs.stats.sharpe(r)
+        sortino = qs.stats.sortino(r)
+        max_dd = qs.stats.max_drawdown(r)
     else:  # last-resort fallback (still vectorised numpy, no manual formulas elsewhere)
-        sharpe = float(r.mean() / (r.std() + 1e-12) * np.sqrt(periods_per_year))
+        sharpe = r.mean() / (r.std() + 1e-12) * np.sqrt(periods_per_year)
         downside = r[r < 0].std()
-        sortino = float(r.mean() / (downside + 1e-12) * np.sqrt(periods_per_year))
+        sortino = r.mean() / (downside + 1e-12) * np.sqrt(periods_per_year)
         cum = (1 + r).cumprod()
-        max_dd = float((cum / cum.cummax() - 1).min())
+        max_dd = (cum / cum.cummax() - 1).min()
 
     gains = r[r > 0].sum()
     losses = -r[r < 0].sum()
-    profit_factor = float(gains / losses) if losses > 0 else float("inf")
+    # Cap profit factor instead of returning a non-JSON inf.
+    profit_factor = _finite(gains / losses) if losses > 0 else (gains > 0) * 999.0
     return {
-        "sharpe": sharpe,
-        "sortino": sortino,
-        "max_drawdown": max_dd,
-        "profit_factor": profit_factor,
+        "sharpe": _finite(sharpe),
+        "sortino": _finite(sortino),
+        "max_drawdown": _finite(max_dd),
+        "profit_factor": float(profit_factor),
     }

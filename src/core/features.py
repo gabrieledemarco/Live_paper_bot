@@ -42,6 +42,14 @@ class OFIFeatureBuilder:
     target_ticks: int = 10
     threshold_bps: float = 1.5
 
+    # Canonical regressors fed to the model. Execution-context columns
+    # (mid_price, bid_qty, ask_qty) are deliberately excluded.
+    FEATURE_COLUMNS = (
+        "ofi", "ofi_norm", "ofi_roll_sum", "ofi_roll_mean", "ofi_roll_std",
+        "trade_flow", "trade_flow_roll", "spread_norm", "mid_return",
+    )
+    CONTEXT_COLUMNS = ("mid_price", "bid_qty", "ask_qty")
+
     # ------------------------------------------------------------------ #
     # Core OFI series
     # ------------------------------------------------------------------ #
@@ -63,10 +71,14 @@ class OFIFeatureBuilder:
         ap = book["best_ask_price"].to_numpy(dtype=np.float64)
         aq = book["best_ask_qty"].to_numpy(dtype=np.float64)
 
-        bp_prev = np.roll(bp, 1); bp_prev[0] = bp[0]
-        bq_prev = np.roll(bq, 1); bq_prev[0] = bq[0]
-        ap_prev = np.roll(ap, 1); ap_prev[0] = ap[0]
-        aq_prev = np.roll(aq, 1); aq_prev[0] = aq[0]
+        bp_prev = np.roll(bp, 1)
+        bp_prev[0] = bp[0]
+        bq_prev = np.roll(bq, 1)
+        bq_prev[0] = bq[0]
+        ap_prev = np.roll(ap, 1)
+        ap_prev[0] = ap[0]
+        aq_prev = np.roll(aq, 1)
+        aq_prev[0] = aq[0]
 
         bid_term = np.where(bp > bp_prev, bq,
                    np.where(bp == bp_prev, bq - bq_prev,
@@ -107,6 +119,13 @@ class OFIFeatureBuilder:
             index=pd.DatetimeIndex(book["timestamp"]),
             name="spread",
         )
+        # Real displayed Top-of-Book volumes - needed by the backtester to
+        # model the theoretical queue position (spec requirement). These are
+        # NOT model regressors, they are carried through as execution context.
+        bid_qty = pd.Series(book["best_bid_qty"].to_numpy(),
+                            index=pd.DatetimeIndex(book["timestamp"]), name="bid_qty")
+        ask_qty = pd.Series(book["best_ask_qty"].to_numpy(),
+                            index=pd.DatetimeIndex(book["timestamp"]), name="ask_qty")
 
         trades = tick_stream.loc[tick_stream["event_kind"] == "TRADE"].copy()
         if not trades.empty:
@@ -122,14 +141,21 @@ class OFIFeatureBuilder:
             ofi_agg = ofi_tick.resample(self.resample_freq).sum()
             mid_agg = mid.resample(self.resample_freq).last().ffill()
             spread_agg = spread.resample(self.resample_freq).mean().ffill()
+            bid_qty_agg = bid_qty.resample(self.resample_freq).last().ffill()
+            ask_qty_agg = ask_qty.resample(self.resample_freq).last().ffill()
             trade_flow = signed.resample(self.resample_freq).sum() if not signed.empty else \
                 pd.Series(0.0, index=mid_agg.index)
             trade_flow = trade_flow.reindex(mid_agg.index, fill_value=0.0)
         else:
-            ofi_agg = ofi_tick
-            mid_agg = mid.reindex(ofi_agg.index, method="ffill")
-            spread_agg = spread.reindex(ofi_agg.index, method="ffill")
-            trade_flow = (signed.reindex(ofi_agg.index, fill_value=0.0)
+            # Tick granularity: collapse duplicate timestamps (multiple BBO
+            # updates within the same millisecond) before reindexing, so the
+            # downstream reindex never hits duplicate labels.
+            ofi_agg = ofi_tick.groupby(level=0).sum()
+            mid_agg = mid.groupby(level=0).last().reindex(ofi_agg.index, method="ffill")
+            spread_agg = spread.groupby(level=0).last().reindex(ofi_agg.index, method="ffill")
+            bid_qty_agg = bid_qty.groupby(level=0).last().reindex(ofi_agg.index, method="ffill")
+            ask_qty_agg = ask_qty.groupby(level=0).last().reindex(ofi_agg.index, method="ffill")
+            trade_flow = (signed.groupby(level=0).sum().reindex(ofi_agg.index, fill_value=0.0)
                           if not signed.empty else pd.Series(0.0, index=ofi_agg.index))
 
         df = pd.DataFrame({
@@ -137,7 +163,12 @@ class OFIFeatureBuilder:
             "spread": spread_agg,
             "ofi": ofi_agg,
             "trade_flow": trade_flow,
+            "bid_qty": bid_qty_agg,
+            "ask_qty": ask_qty_agg,
         }).dropna(subset=["mid_price"])
+        # Guard against non-positive / NaN mid prices that would poison the
+        # log-returns and the label (np.log would emit -inf/NaN silently).
+        df = df[df["mid_price"] > 0].copy()
 
         # Rolling OFI features over the configured window.
         w = self.rolling_window
@@ -151,6 +182,13 @@ class OFIFeatureBuilder:
         df["mid_return"] = np.log(df["mid_price"]).diff().fillna(0.0)
         df["spread_norm"] = (df["spread"] / df["mid_price"]).fillna(0.0)
 
+        if self.target_ticks <= 0:
+            raise ValueError("target_ticks must be a positive integer")
+        if len(df) <= self.target_ticks:
+            raise ValueError(
+                f"Not enough samples ({len(df)}) for target_ticks={self.target_ticks}."
+            )
+
         # Label: sign of forward mid-price change in basis points.
         future = df["mid_price"].shift(-self.target_ticks)
         fwd_bps = (np.log(future) - np.log(df["mid_price"])) * 1e4
@@ -161,14 +199,13 @@ class OFIFeatureBuilder:
             name="label",
         ).astype("int8")
 
+        # Drop the trailing rows whose forward label cannot be observed.
         df = df.iloc[:-self.target_ticks].copy()
         label = label.iloc[:-self.target_ticks]
 
-        feature_cols = [
-            "ofi", "ofi_norm", "ofi_roll_sum", "ofi_roll_mean", "ofi_roll_std",
-            "trade_flow", "trade_flow_roll", "spread_norm", "mid_return",
-        ]
-        return df[["mid_price"] + feature_cols], label
+        # Execution-context columns travel with the matrix but are excluded
+        # from the regressors used to fit the model.
+        return df[list(self.CONTEXT_COLUMNS) + list(self.FEATURE_COLUMNS)], label
 
     # ------------------------------------------------------------------ #
     # Helper for alpha-decay analysis
