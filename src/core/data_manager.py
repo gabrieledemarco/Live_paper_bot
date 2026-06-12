@@ -259,11 +259,26 @@ class DataManager:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> pd.DataFrame:
-        """Read back the on-disk tick stream optionally bounded by date."""
-        parts: Iterable[Path] = sorted(self.output_dir.glob("date=*/part.parquet"))
+        """Read back the on-disk tick stream optionally bounded by date.
+
+        If no parquet partitions are found and ``auto_download`` is enabled
+        we transparently bootstrap the dataset by downloading the raw
+        Binance Vision archives and running the ingestion pipeline, so
+        downstream callers (trainer, evaluator, UI) never have to remember
+        the manual ordering of steps.
+        """
+        parts: List[Path] = sorted(self.output_dir.glob("date=*/part.parquet"))
+        if not parts and self.auto_download:
+            logger.info(
+                "[%s] no parquet partitions in %s - auto-bootstrapping "
+                "download + ingest", self.pair, self.output_dir,
+            )
+            self.persist()
+            parts = sorted(self.output_dir.glob("date=*/part.parquet"))
         if not parts:
             raise FileNotFoundError(
-                f"No parquet partitions found in {self.output_dir}. Run ingest first."
+                f"No parquet partitions found in {self.output_dir}. "
+                f"Run `python main.py ingest` (or enable [DATA] auto_download=true)."
             )
 
         frames = []
