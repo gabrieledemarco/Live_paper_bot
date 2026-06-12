@@ -1,0 +1,13 @@
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14.0
+scikit-learn>=1.3
+lightgbm>=4.0
+joblib>=1.3
+matplotlib>=3.7
+seaborn>=0.12
+streamlit>=1.30
+plotly>=5.18
+quantstats>=0.0.62
+empyrical-reloaded>=0.5.9
+tqdm>=4.66
