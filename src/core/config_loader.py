@@ -22,6 +22,8 @@ class DataCfg:
     test_start_date: str
     test_end_date: str
     resample_freq: str
+    market: str = "spot"
+    auto_download: bool = True
 
 
 @dataclass
@@ -77,6 +79,8 @@ class PipelineConfig:
             test_start_date=cfg.get("DATA", "test_start_date"),
             test_end_date=cfg.get("DATA", "test_end_date"),
             resample_freq=cfg.get("DATA", "resample_freq"),
+            market=cfg.get("DATA", "market", fallback="spot"),
+            auto_download=cfg.getboolean("DATA", "auto_download", fallback=True),
         )
 
         model = ModelCfg(

@@ -45,11 +45,18 @@ class DataManager:
         pair: str,
         input_dir: str | Path,
         output_dir: str | Path,
+        market: str = "spot",
+        auto_download: bool = False,
+        download_range: tuple[str, str] | None = None,
     ) -> None:
         self.pair = pair.upper()
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir) / self.pair
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.input_dir.mkdir(parents=True, exist_ok=True)
+        self.market = market
+        self.auto_download = auto_download
+        self.download_range = download_range
 
     # ------------------------------------------------------------------ #
     # File discovery
@@ -65,6 +72,16 @@ class DataManager:
         files: List[Path] = []
         for pat in patterns:
             files.extend(sorted(self.input_dir.rglob(pat)))
+        if not files and self.auto_download and self.download_range is not None:
+            from .downloader import BinanceVisionDownloader
+            logger.info(
+                "[%s] no %s archives on disk - auto-downloading %s..%s",
+                self.pair, kind, *self.download_range,
+            )
+            dl = BinanceVisionDownloader(self.input_dir, market=self.market)
+            dl.download_pair(self.pair, *self.download_range, kinds=[kind])
+            for pat in patterns:
+                files.extend(sorted(self.input_dir.rglob(pat)))
         return files
 
     # ------------------------------------------------------------------ #
@@ -108,7 +125,9 @@ class DataManager:
         files = self._discover("bookTicker")
         if not files:
             raise FileNotFoundError(
-                f"No bookTicker files found for {self.pair} under {self.input_dir}"
+                f"No bookTicker files found for {self.pair} under {self.input_dir}. "
+                f"Run `python main.py download` (or enable [DATA] auto_download=true) "
+                f"to fetch them from data.binance.vision."
             )
 
         frames = []
@@ -138,7 +157,9 @@ class DataManager:
             cols = AGG_TRADES_COLS
         if not files:
             raise FileNotFoundError(
-                f"No (agg)trades files found for {self.pair} under {self.input_dir}"
+                f"No (agg)trades files found for {self.pair} under {self.input_dir}. "
+                f"Run `python main.py download` (or enable [DATA] auto_download=true) "
+                f"to fetch them from data.binance.vision."
             )
 
         frames = []

@@ -90,6 +90,10 @@ class ModelTrainer:
             pair=pair,
             input_dir=self.cfg.data.input_dir,
             output_dir=self.cfg.data.output_dir,
+            market=self.cfg.data.market,
+            auto_download=self.cfg.data.auto_download,
+            download_range=(self.cfg.data.train_start_date,
+                            self.cfg.data.train_end_date),
         )
         tick_stream = dm.load_partitioned(
             start_date=self.cfg.data.train_start_date,

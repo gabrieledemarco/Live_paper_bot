@@ -89,6 +89,10 @@ class ModelEvaluator:
             pair=pair,
             input_dir=self.cfg.data.input_dir,
             output_dir=self.cfg.data.output_dir,
+            market=self.cfg.data.market,
+            auto_download=self.cfg.data.auto_download,
+            download_range=(self.cfg.data.test_start_date,
+                            self.cfg.data.test_end_date),
         )
         ticks = dm.load_partitioned(
             start_date=self.cfg.data.test_start_date,

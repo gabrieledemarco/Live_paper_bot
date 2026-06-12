@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from src.backtest.engine import BacktestEngine  # noqa: E402
 from src.core.config_loader import PipelineConfig  # noqa: E402
 from src.core.data_manager import DataManager  # noqa: E402
+from src.core.downloader import BinanceVisionDownloader  # noqa: E402
 from src.core.features import OFIFeatureBuilder  # noqa: E402
 from src.models.evaluation import ModelEvaluator  # noqa: E402
 from src.models.trainer import ModelTrainer  # noqa: E402
@@ -72,12 +73,35 @@ with TAB_CFG:
              "persiste come Parquet partizionato per coppia e data.")
 
     target = st.selectbox("Coppia", cfg.data.pairs, key="ingest_pair")
-    if st.button("Esegui ingestion"):
+
+    dl_col, ing_col = st.columns(2)
+    if dl_col.button("Scarica dati da Binance Vision"):
+        progress = st.progress(0.0, text=f"Download {target} ...")
+        try:
+            dl = BinanceVisionDownloader(cfg.data.input_dir, market=cfg.data.market)
+            start = min(cfg.data.train_start_date, cfg.data.test_start_date)
+            end = max(cfg.data.train_end_date, cfg.data.test_end_date)
+            reports = dl.download_pair(target, start, end,
+                                       kinds=("bookTicker", "trades"))
+            progress.progress(1.0, text="Download completato.")
+            for r in reports:
+                st.write(f"**{r.kind}** - scaricati: {len(r.downloaded)}, "
+                         f"già presenti: {len(r.skipped)}, "
+                         f"mancanti su Vision: {len(r.missing)}")
+        except Exception as exc:
+            st.error(f"Errore download: {exc}")
+
+    if ing_col.button("Esegui ingestion"):
         progress = st.progress(0.0, text=f"Avvio ingestion {target} ...")
         try:
+            start = min(cfg.data.train_start_date, cfg.data.test_start_date)
+            end = max(cfg.data.train_end_date, cfg.data.test_end_date)
             dm = DataManager(pair=target,
                              input_dir=cfg.data.input_dir,
-                             output_dir=cfg.data.output_dir)
+                             output_dir=cfg.data.output_dir,
+                             market=cfg.data.market,
+                             auto_download=cfg.data.auto_download,
+                             download_range=(start, end))
             progress.progress(0.25, text="Lettura bookTicker ...")
             book = dm.load_book_ticker()
             progress.progress(0.5, text="Lettura trades ...")

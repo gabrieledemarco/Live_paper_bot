@@ -15,6 +15,7 @@ from pathlib import Path
 
 from src.core.config_loader import PipelineConfig
 from src.core.data_manager import DataManager
+from src.core.downloader import BinanceVisionDownloader
 from src.models.evaluation import ModelEvaluator
 from src.models.trainer import ModelTrainer
 
@@ -31,12 +32,25 @@ def _setup_logging(cfg: PipelineConfig) -> None:
     )
 
 
+def cmd_download(cfg: PipelineConfig) -> None:
+    dl = BinanceVisionDownloader(cfg.data.input_dir, market=cfg.data.market)
+    # Cover both train and test windows in a single pass.
+    start = min(cfg.data.train_start_date, cfg.data.test_start_date)
+    end = max(cfg.data.train_end_date, cfg.data.test_end_date)
+    dl.download_many(cfg.data.pairs, start, end, kinds=("bookTicker", "trades"))
+
+
 def cmd_ingest(cfg: PipelineConfig) -> None:
+    start = min(cfg.data.train_start_date, cfg.data.test_start_date)
+    end = max(cfg.data.train_end_date, cfg.data.test_end_date)
     for pair in cfg.data.pairs:
         logging.info("Ingesting %s", pair)
         dm = DataManager(pair=pair,
                          input_dir=cfg.data.input_dir,
-                         output_dir=cfg.data.output_dir)
+                         output_dir=cfg.data.output_dir,
+                         market=cfg.data.market,
+                         auto_download=cfg.data.auto_download,
+                         download_range=(start, end))
         dm.persist()
 
 
@@ -52,13 +66,18 @@ def cmd_evaluate(cfg: PipelineConfig) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OFI HFT pipeline")
-    parser.add_argument("stage", choices=["ingest", "train", "evaluate", "all"])
+    parser.add_argument(
+        "stage",
+        choices=["download", "ingest", "train", "evaluate", "all"],
+    )
     parser.add_argument("--config", default="config.ini", type=Path)
     args = parser.parse_args()
 
     cfg = PipelineConfig.load(args.config)
     _setup_logging(cfg)
 
+    if args.stage in {"download", "all"}:
+        cmd_download(cfg)
     if args.stage in {"ingest", "all"}:
         cmd_ingest(cfg)
     if args.stage in {"train", "all"}:
