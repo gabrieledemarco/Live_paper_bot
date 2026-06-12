@@ -28,7 +28,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import (
-    accuracy_score,
     classification_report,
     confusion_matrix,
 )
@@ -147,9 +146,11 @@ class ModelEvaluator:
         xs = sorted(decay.keys())
         ys = [decay[k] for k in xs]
         ax.plot(xs, ys, marker="o", color="firebrick")
+        ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8, label="random (0.5)")
         ax.set_xlabel("Forward horizon (ticks)")
-        ax.set_ylabel("Predictive accuracy")
-        ax.set_title("Alpha decay")
+        ax.set_ylabel("Directional hit-rate")
+        ax.set_title("Alpha decay (signal vs realised forward return)")
+        ax.legend()
         ax.grid(alpha=0.3)
         fig.tight_layout()
         fig.savefig(out, dpi=150)
@@ -210,26 +211,36 @@ class ModelEvaluator:
         )
 
         # ---- Strategy P&L (pre-backtest) ----------------------------- #
-        # Use the predicted direction times the realised forward log return
-        # as a clean signal-quality measure (executable-style).
-        log_ret = X_df["mid_return"].to_numpy()
-        fwd_ret = pd.Series(log_ret).shift(-1).fillna(0.0).to_numpy()
+        # Signal-quality proxy: predicted direction times the realised
+        # forward mid return. The forward return is recomputed independently
+        # from mid_price (NOT taken from the `mid_return` feature, which is a
+        # past return fed to the model) to avoid any circularity.
+        mid = X_df["mid_price"].to_numpy(dtype=np.float64)
+        fwd_ret = np.zeros_like(mid)
+        fwd_ret[:-1] = np.log(mid[1:]) - np.log(mid[:-1])  # t -> t+1
         strat_ret = pd.Series(y_pred.astype(np.float64) * fwd_ret, index=X_df.index)
         period_seconds = pd.Timedelta(self.cfg.data.resample_freq).total_seconds()
         ann_factor = 365 * 24 * 3600 / max(period_seconds, 1)
         self._plot_rolling_finance(strat_ret, charts / "rolling_finance.png", ann_factor)
 
         # ---- Alpha decay --------------------------------------------- #
+        # True alpha decay: hold the model's signal FIXED (one prediction per
+        # sample) and measure its directional hit-rate against the sign of the
+        # realised forward return at increasing horizons. We do NOT re-predict
+        # (the features are horizon-independent, so re-prediction would give a
+        # near-constant curve). Only non-flat signals are scored.
+        sig = y_pred.astype(np.int8)
+        active = sig != 0
+        log_mid = np.log(mid)
         decay: Dict[int, float] = {}
         for h in self.DECAY_HORIZONS:
-            X_h, y_h = builder.build_labels_at_horizon(ticks, h)
-            common = X_h.index.intersection(X_df.index)
-            if common.empty:
+            fwd_h = np.full_like(mid, np.nan)
+            fwd_h[:-h] = log_mid[h:] - log_mid[:-h]  # t -> t+h
+            valid = active & np.isfinite(fwd_h)
+            if not valid.any():
                 continue
-            X_h_arr = X_h.loc[common, feature_cols].to_numpy()
-            y_h_arr = y_h.loc[common].to_numpy()
-            preds_h = model.predict(X_h_arr)
-            decay[h] = float(accuracy_score(y_h_arr, preds_h))
+            hit = np.sign(sig[valid]) == np.sign(fwd_h[valid])
+            decay[h] = float(hit.mean())
         self._plot_alpha_decay(decay, charts / "alpha_decay.png")
 
         # ---- Latency stress test ------------------------------------- #
@@ -313,7 +324,10 @@ def financial_kpis(returns: pd.Series, periods_per_year: int = 365 * 24 * 3600) 
         max_dd = qs.stats.max_drawdown(r)
     else:  # last-resort fallback (still vectorised numpy, no manual formulas elsewhere)
         sharpe = r.mean() / (r.std() + 1e-12) * np.sqrt(periods_per_year)
-        downside = r[r < 0].std()
+        # Correct downside deviation: root-mean-square of the negative part
+        # over ALL observations (NOT the std among losers, which collapses to
+        # ~0 when stops are of fixed size and explodes the ratio).
+        downside = np.sqrt(np.mean(np.minimum(r, 0.0) ** 2))
         sortino = r.mean() / (downside + 1e-12) * np.sqrt(periods_per_year)
         cum = (1 + r).cumprod()
         max_dd = (cum / cum.cummax() - 1).min()

@@ -10,4 +10,5 @@ streamlit>=1.30
 plotly>=5.18
 quantstats>=0.0.62
 empyrical-reloaded>=0.5.9
+pytz>=2023.3
 tqdm>=4.66

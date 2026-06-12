@@ -227,10 +227,16 @@ with TAB_BT:
                                  X_df=X_df, y=y, latency_ms=int(latency))
 
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Sharpe", f"{res['kpis']['sharpe']:.2f}")
+                k1.metric("Sharpe (per-trade)", f"{res['kpis']['sharpe']:.2f}")
                 k2.metric("Max Drawdown", f"{res['kpis']['max_drawdown']:.2%}")
                 k3.metric("Fill Rate", f"{res['fill_rate']:.2%}")
                 k4.metric("Total Return", f"{res['kpis']['total_return']:.2%}")
+
+                k5, k6, k7, k8 = st.columns(4)
+                k5.metric("Sortino (per-trade)", f"{res['kpis']['sortino']:.2f}")
+                k6.metric("Profit Factor", f"{res['kpis']['profit_factor']:.2f}")
+                k7.metric("N. Trades", f"{res['kpis']['n_trades']}")
+                k8.metric("Win Rate", f"{res['kpis']['win_rate']:.2%}")
 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=res["equity"].index,

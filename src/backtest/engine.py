@@ -37,6 +37,7 @@ class _Position:
     stop_price: float = 0.0
     take_price: float = 0.0
     open_ts: Optional[pd.Timestamp] = None
+    entry_fee: float = 0.0
 
 
 class BacktestEngine:
@@ -156,6 +157,10 @@ class BacktestEngine:
         orders_filled = 0
         queue_ahead = 0.0
         pending_side = 0  # +1 buy limit, -1 sell limit, 0 none
+        # Net fractional return of every closed round-trip. These (not the
+        # idle-dominated per-bar returns) are the correct basis for the
+        # headline risk-adjusted metrics.
+        trade_returns: list[float] = []
 
         bv = buy_flow.to_numpy()
         sv = sell_flow.to_numpy()
@@ -196,8 +201,13 @@ class BacktestEngine:
                 if exit_price is not None:
                     # Aggressive exit -> taker fee.
                     pnl = pos.qty * (exit_price - pos.entry_price)
-                    fee = abs(pos.qty) * exit_price * taker_fee
-                    cash += pnl - fee
+                    exit_fee = abs(pos.qty) * exit_price * taker_fee
+                    cash += pnl - exit_fee
+                    # Net per-trade return on entry notional (entry + exit fees).
+                    entry_notional = abs(pos.qty) * pos.entry_price
+                    if entry_notional > 0:
+                        net = (pnl - exit_fee - pos.entry_fee) / entry_notional
+                        trade_returns.append(float(net))
                     pos = _Position()
 
             # ---- Queue advancement for pending passive limit --------- #
@@ -221,6 +231,7 @@ class BacktestEngine:
                         stop_price=limit_price * (1 - sl_bps) if qty > 0 else limit_price * (1 + sl_bps),
                         take_price=limit_price * (1 + tp_bps) if qty > 0 else limit_price * (1 - tp_bps),
                         open_ts=ts_index[i],
+                        entry_fee=fee,
                     )
                     orders_filled += 1
                     pending_side = 0
@@ -256,13 +267,25 @@ class BacktestEngine:
         idle_pct = float((inv_series == 0).mean())
         fill_rate = float(orders_filled / orders_submitted) if orders_submitted else 0.0
 
-        # Crypto trades 365d/24h - annualise on calendar bars, not 252.
-        periods_per_year = int(365 * 24 * 3600 / max(period_seconds, 1))
-        kpis = financial_kpis(returns, periods_per_year=periods_per_year)
+        # Headline risk-adjusted metrics are computed on the PER-TRADE return
+        # series, not the per-bar equity returns. The latter are ~99% zeros
+        # (idle bars) which deflate the std and grossly inflate Sharpe.
+        # We report the per-trade (NON-annualised) Sharpe/Sortino - the
+        # standard in HFT signal research and robust both to idle bars and to
+        # trade frequency. Annualising by trades/year would explode the ratios
+        # because fixed-size stops make the per-trade loss distribution nearly
+        # degenerate (near-zero downside dispersion).
+        trade_ret = pd.Series(trade_returns, dtype=float)
+        kpis = financial_kpis(trade_ret, periods_per_year=1)
+
+        wins = int((trade_ret > 0).sum())
         kpis.update({
             "fill_rate": fill_rate,
             "orders_submitted": orders_submitted,
             "orders_filled": orders_filled,
+            "n_trades": len(trade_returns),
+            "win_rate": float(wins / len(trade_returns)) if trade_returns else 0.0,
+            "avg_trade_return": float(trade_ret.mean()) if trade_returns else 0.0,
             "final_equity": float(equity_curve.iloc[-1]),
             "total_return": float(equity_curve.iloc[-1] / self.cfg.backtest.initial_capital - 1),
         })
@@ -271,6 +294,7 @@ class BacktestEngine:
             "pair": pair,
             "equity": equity_curve,
             "returns": returns,
+            "trade_returns": trade_ret,
             "inventory": inv_series,
             "kpis": kpis,
             "fill_rate": fill_rate,
