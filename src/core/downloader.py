@@ -51,8 +51,10 @@ class BinanceVisionDownloader:
     max_workers : parallel HTTP workers.
     """
 
+    # NB: Binance Vision does NOT publish bookTicker for spot - the dataset
+    # only exists under the futures (um/cm) trees. We omit it on purpose so
+    # users get a clear error instead of a silent wall of 404s.
     SPOT_PATHS = {
-        "bookTicker": "spot/daily/bookTicker",
         "trades": "spot/daily/trades",
         "aggTrades": "spot/daily/aggTrades",
     }
@@ -93,7 +95,12 @@ class BinanceVisionDownloader:
     # ------------------------------------------------------------------ #
     def _remote_url(self, pair: str, kind: str, day: date) -> str:
         if kind not in self._paths:
-            raise ValueError(f"Unsupported kind '{kind}' for market {self.market}")
+            raise ValueError(
+                f"Dataset '{kind}' is not available on Binance Vision for "
+                f"market='{self.market}'. Allowed for this market: "
+                f"{sorted(self._paths)}. Hint: bookTicker exists only for "
+                f"futures (um/cm)."
+            )
         fname = f"{pair}-{kind}-{day.isoformat()}.zip"
         return f"{BASE_URL}/{self._paths[kind]}/{pair}/{fname}"
 
