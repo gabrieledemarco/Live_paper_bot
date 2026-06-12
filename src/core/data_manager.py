@@ -57,6 +57,10 @@ class DataManager:
         self.market = market
         self.auto_download = auto_download
         self.download_range = download_range
+        # Diagnostic record of the latest auto-download attempt - surfaced in
+        # the FileNotFoundError so the user sees WHY the bootstrap failed
+        # (Vision 404 vs network unreachable) instead of a generic message.
+        self._last_download_report: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ #
     # File discovery
@@ -79,10 +83,36 @@ class DataManager:
                 self.pair, kind, *self.download_range,
             )
             dl = BinanceVisionDownloader(self.input_dir, market=self.market)
-            dl.download_pair(self.pair, *self.download_range, kinds=[kind])
+            reports = dl.download_pair(self.pair, *self.download_range, kinds=[kind])
+            for r in reports:
+                self._last_download_report[r.kind] = {
+                    "downloaded": len(r.downloaded),
+                    "skipped": len(r.skipped),
+                    "missing": r.missing,
+                }
             for pat in patterns:
                 files.extend(sorted(self.input_dir.rglob(pat)))
         return files
+
+    def _missing_files_hint(self, kind: str) -> str:
+        """Human-readable explanation of the auto-download outcome for ``kind``."""
+        rep = self._last_download_report.get(kind)
+        if not rep:
+            if not self.auto_download:
+                return ("Auto-download disabled. Set [DATA] auto_download=true "
+                        "or run `python main.py download` manually.")
+            return ("Auto-download was not attempted (no download_range "
+                    "configured). Run `python main.py download` manually.")
+        if rep["downloaded"] == 0 and rep["skipped"] == 0:
+            sample = ", ".join(rep["missing"][:3])
+            more = "" if len(rep["missing"]) <= 3 else f" (+{len(rep['missing']) - 3} more)"
+            return (f"Vision returned no archives for any of the {len(rep['missing'])} "
+                    f"requested {kind} days (e.g. {sample}{more}). Possible causes: "
+                    f"the date range has no published data for market='{self.market}', "
+                    f"OR the host cannot reach data.binance.vision (Streamlit Cloud "
+                    f"may be rate-limited / geo-blocked).")
+        return (f"Auto-download reported downloaded={rep['downloaded']} "
+                f"skipped={rep['skipped']} missing={len(rep['missing'])} for {kind}.")
 
     # ------------------------------------------------------------------ #
     # Low-level loaders
@@ -125,9 +155,8 @@ class DataManager:
         files = self._discover("bookTicker")
         if not files:
             raise FileNotFoundError(
-                f"No bookTicker files found for {self.pair} under {self.input_dir}. "
-                f"Run `python main.py download` (or enable [DATA] auto_download=true) "
-                f"to fetch them from data.binance.vision."
+                f"No bookTicker files found for {self.pair} under {self.input_dir}.\n"
+                f"  -> {self._missing_files_hint('bookTicker')}"
             )
 
         frames = []
@@ -156,10 +185,10 @@ class DataManager:
             files = self._discover("aggTrades")
             cols = AGG_TRADES_COLS
         if not files:
+            kind_hint = self._missing_files_hint("trades")
             raise FileNotFoundError(
-                f"No (agg)trades files found for {self.pair} under {self.input_dir}. "
-                f"Run `python main.py download` (or enable [DATA] auto_download=true) "
-                f"to fetch them from data.binance.vision."
+                f"No (agg)trades files found for {self.pair} under {self.input_dir}.\n"
+                f"  -> {kind_hint}"
             )
 
         frames = []

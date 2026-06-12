@@ -68,7 +68,7 @@ def _data_status(cfg: PipelineConfig) -> pd.DataFrame:
 
 def _render_data_status(cfg: PipelineConfig) -> None:
     st.caption(f"Stato dati su disco · root = `{cfg.data.input_dir.parent}`")
-    st.dataframe(_data_status(cfg), hide_index=True, use_container_width=True)
+    st.dataframe(_data_status(cfg), hide_index=True, width="stretch")
 
 
 cfg = _load_config()
@@ -157,10 +157,53 @@ with TAB_TRAIN:
              "(Time Series CV + persistenza del modello).")
 
     _render_data_status(cfg)
-    st.caption("Se mancano le partizioni Parquet, il training le rigenera "
-               "automaticamente (download + ingest) grazie all'auto-bootstrap.")
+    st.caption("Su Streamlit Cloud il filesystem è effimero: a ogni restart "
+               "i dati vanno riscaricati. Usa **Setup completo** per fare "
+               "in un colpo solo download + ingest + train con progress visibile.")
 
-    if st.button("Esegui training per tutte le coppie"):
+    setup_col, train_col = st.columns(2)
+    if setup_col.button("Setup completo (download + ingest + train)"):
+        start = min(cfg.data.train_start_date, cfg.data.test_start_date)
+        end = max(cfg.data.train_end_date, cfg.data.test_end_date)
+        for pair in cfg.data.pairs:
+            with st.status(f"{pair}: setup in corso ...", expanded=True) as status:
+                try:
+                    st.write("⬇️  Download archivi Binance Vision ...")
+                    dl = BinanceVisionDownloader(cfg.data.input_dir, market=cfg.data.market)
+                    reports = dl.download_pair(pair, start, end,
+                                               kinds=("bookTicker", "trades"))
+                    for r in reports:
+                        ok = len(r.downloaded) + len(r.skipped)
+                        st.write(f"   {r.kind}: ok={ok} missing={len(r.missing)}")
+                        if ok == 0:
+                            sample = ", ".join(r.missing[:3])
+                            st.error(f"Vision non ha restituito archivi `{r.kind}` "
+                                     f"per nessuno dei giorni richiesti. "
+                                     f"Esempi 404: {sample}. "
+                                     f"Verifica market='{cfg.data.market}' o "
+                                     f"l'accesso a data.binance.vision.")
+                            status.update(label=f"{pair}: download fallito",
+                                          state="error")
+                            raise RuntimeError("download produced no archives")
+                    st.write("📦 Ingestion → Parquet ...")
+                    dm = DataManager(pair=pair,
+                                     input_dir=cfg.data.input_dir,
+                                     output_dir=cfg.data.output_dir,
+                                     market=cfg.data.market,
+                                     auto_download=False,
+                                     download_range=(start, end))
+                    dm.persist()
+                    st.write("🧠 Training modello ...")
+                    res = ModelTrainer(cfg).train_pair(pair)
+                    st.write(f"   ✅ macroF1 CV={[round(s,3) for s in res.cv_scores]}")
+                    status.update(label=f"{pair}: setup completato",
+                                  state="complete")
+                except Exception as exc:
+                    status.update(label=f"{pair}: setup fallito",
+                                  state="error")
+                    st.exception(exc)
+
+    if train_col.button("Esegui training per tutte le coppie"):
         with st.spinner("Training in corso ..."):
             trainer = ModelTrainer(cfg)
             results = trainer.train_all()
@@ -195,11 +238,22 @@ with TAB_ANALYTICS:
     st.header("Analisi grafica avanzata")
     pair = st.selectbox("Coppia", cfg.data.pairs, key="ana_pair")
 
+    model_path = cfg.model.model_dir / f"{pair}_ofi_{cfg.model.model_type.lower()}.joblib"
+    if not model_path.exists():
+        st.warning(f"Modello mancante per **{pair}**: esegui prima il "
+                   f"**Setup completo** nel Tab 2 (`{model_path.name}` non trovato).")
+
     if st.button("Genera evaluation completa"):
-        with st.spinner("Calcolo metriche e grafici ..."):
-            evaluator = ModelEvaluator(cfg)
-            evaluator.evaluate_pair(pair)
-        st.success("Report rigenerato.")
+        if not model_path.exists():
+            st.error("Impossibile generare l'evaluation: manca il modello addestrato.")
+        else:
+            try:
+                with st.spinner("Calcolo metriche e grafici ..."):
+                    evaluator = ModelEvaluator(cfg)
+                    evaluator.evaluate_pair(pair)
+                st.success("Report rigenerato.")
+            except Exception as exc:
+                st.error(f"Evaluation fallita: {exc}")
 
     charts_dir = cfg.report.charts_dir / pair
     sections = [
@@ -281,7 +335,7 @@ with TAB_BT:
                                          mode="lines", name="Equity"))
                 fig.update_layout(title=f"{pair} - Equity Curve",
                                   xaxis_title="Time", yaxis_title="Equity")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
                 fig2 = go.Figure()
                 fig2.add_trace(go.Scatter(x=res["inventory"].index,
@@ -290,4 +344,4 @@ with TAB_BT:
                                           line=dict(color="seagreen")))
                 fig2.update_layout(title="Inventory over time",
                                    xaxis_title="Time", yaxis_title="Net position")
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width="stretch")
