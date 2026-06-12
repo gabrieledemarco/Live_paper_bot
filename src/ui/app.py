@@ -42,6 +42,35 @@ def _save_config(text: str) -> None:
     _load_config.clear()
 
 
+def _data_status(cfg: PipelineConfig) -> pd.DataFrame:
+    """Read the actual on-disk state (raw archives + parquet partitions) for
+    every configured pair. This is the single source of truth surfaced across
+    tabs, so transient ``st.success`` messages disappearing on rerun never
+    makes it look like the data was lost."""
+    rows = []
+    for pair in cfg.data.pairs:
+        raw_dir = cfg.data.input_dir / pair
+        n_book = len(list(raw_dir.rglob(f"{pair}-bookTicker-*.zip"))) if raw_dir.exists() else 0
+        n_trades = (len(list(raw_dir.rglob(f"{pair}-trades-*.zip")))
+                    + len(list(raw_dir.rglob(f"{pair}-aggTrades-*.zip")))) if raw_dir.exists() else 0
+        pq_dir = cfg.data.output_dir / pair
+        n_parts = len(list(pq_dir.glob("date=*/part.parquet"))) if pq_dir.exists() else 0
+        model_path = cfg.model.model_dir / f"{pair}_ofi_{cfg.model.model_type.lower()}.joblib"
+        rows.append({
+            "pair": pair,
+            "raw bookTicker": n_book,
+            "raw trades": n_trades,
+            "parquet partitions": n_parts,
+            "model": "✅" if model_path.exists() else "—",
+        })
+    return pd.DataFrame(rows)
+
+
+def _render_data_status(cfg: PipelineConfig) -> None:
+    st.caption(f"Stato dati su disco · root = `{cfg.data.input_dir.parent}`")
+    st.dataframe(_data_status(cfg), hide_index=True, use_container_width=True)
+
+
 cfg = _load_config()
 
 st.title("OFI HFT Trading Pipeline")
@@ -115,6 +144,10 @@ with TAB_CFG:
         except Exception as exc:
             st.error(f"Errore durante ingestion: {exc}")
 
+    st.divider()
+    st.subheader("Stato dati")
+    _render_data_status(cfg)
+
 # ---------------------------------------------------------------------- #
 # TAB 2 - Training & Validation
 # ---------------------------------------------------------------------- #
@@ -122,6 +155,10 @@ with TAB_TRAIN:
     st.header("Addestramento e validazione")
     st.write("Lancia il `ModelTrainer` per tutte le coppie configurate "
              "(Time Series CV + persistenza del modello).")
+
+    _render_data_status(cfg)
+    st.caption("Se mancano le partizioni Parquet, il training le rigenera "
+               "automaticamente (download + ingest) grazie all'auto-bootstrap.")
 
     if st.button("Esegui training per tutte le coppie"):
         with st.spinner("Training in corso ..."):

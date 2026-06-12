@@ -67,13 +67,25 @@ class PipelineConfig:
     @classmethod
     def load(cls, path: str | Path = "config.ini") -> "PipelineConfig":
         cfg = configparser.ConfigParser()
-        read = cfg.read(path)
+        config_path = Path(path).resolve()
+        read = cfg.read(config_path)
         if not read:
             raise FileNotFoundError(f"Config file not found: {path}")
 
+        # Project root = directory holding config.ini. ALL relative paths in
+        # the INI are anchored here, NOT to the process working directory.
+        # This makes ingestion (e.g. from the Streamlit "download" button) and
+        # later reads (training/backtest) always hit the same folders, even
+        # when the CWD differs between Streamlit reruns / launch contexts.
+        root = config_path.parent
+
+        def _resolve(p: str) -> Path:
+            q = Path(p)
+            return q if q.is_absolute() else (root / q)
+
         data = DataCfg(
-            input_dir=Path(cfg.get("DATA", "input_dir")),
-            output_dir=Path(cfg.get("DATA", "output_dir")),
+            input_dir=_resolve(cfg.get("DATA", "input_dir")),
+            output_dir=_resolve(cfg.get("DATA", "output_dir")),
             pairs=[p.strip().upper() for p in cfg.get("DATA", "pairs").split(",")],
             train_start_date=cfg.get("DATA", "train_start_date"),
             train_end_date=cfg.get("DATA", "train_end_date"),
@@ -90,7 +102,7 @@ class PipelineConfig:
             model_type=cfg.get("MODEL", "model_type"),
             n_splits=cfg.getint("MODEL", "n_splits"),
             ofi_window=cfg.getint("MODEL", "ofi_window"),
-            model_dir=Path(cfg.get("MODEL", "model_dir")),
+            model_dir=_resolve(cfg.get("MODEL", "model_dir")),
         )
 
         backtest = BacktestCfg(
@@ -108,8 +120,8 @@ class PipelineConfig:
         )
 
         report = ReportCfg(
-            charts_dir=Path(cfg.get("REPORT", "charts_dir")),
-            log_dir=Path(cfg.get("REPORT", "log_dir")),
+            charts_dir=_resolve(cfg.get("REPORT", "charts_dir")),
+            log_dir=_resolve(cfg.get("REPORT", "log_dir")),
         )
 
         # Ensure mandatory output dirs exist.
