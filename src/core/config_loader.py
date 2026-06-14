@@ -9,7 +9,7 @@ from __future__ import annotations
 import configparser
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -56,6 +56,42 @@ class ReportCfg:
     log_dir: Path
 
 
+# --------------------------------------------------------------------------- #
+# High-Timeframe (HTF) multi-timeframe track.
+# These sections are OPTIONAL: when [HTF_DATA] is absent from the INI the
+# tick-level OFI pipeline keeps working exactly as before and ``cfg.htf_*``
+# attributes are ``None``.
+# --------------------------------------------------------------------------- #
+@dataclass
+class HtfDataCfg:
+    exchange: str
+    pairs: List[str]
+    timeframes: List[str]
+    base_timeframe: str
+    lookback_days: int
+    output_dir: Path
+
+
+@dataclass
+class HtfFeatureCfg:
+    vol_window: int
+    vwap_window: int
+    enrich_from_ticks: bool
+
+
+@dataclass
+class HtfModelCfg:
+    task_type: str          # "classification" | "regression"
+    model_type: str         # "LightGBM" | "Ridge"
+    target_horizon: int     # base-timeframe bars ahead for the label
+    threshold_bps: float    # flat-zone half-width (classification only)
+    n_splits: int
+    embargo: int            # bars purged between train/test folds
+    top_k_features: int     # 0 = keep all
+    holdout_frac: float     # fraction of the (time-ordered) tail used as test
+    model_dir: Path
+
+
 @dataclass
 class PipelineConfig:
     data: DataCfg
@@ -63,6 +99,9 @@ class PipelineConfig:
     backtest: BacktestCfg
     report: ReportCfg
     raw: configparser.ConfigParser = field(repr=False)
+    htf_data: Optional[HtfDataCfg] = None
+    htf_features: Optional[HtfFeatureCfg] = None
+    htf_model: Optional[HtfModelCfg] = None
 
     @classmethod
     def load(cls, path: str | Path = "config.ini") -> "PipelineConfig":
@@ -128,4 +167,34 @@ class PipelineConfig:
         for p in (data.output_dir, model.model_dir, report.charts_dir, report.log_dir):
             p.mkdir(parents=True, exist_ok=True)
 
-        return cls(data=data, model=model, backtest=backtest, report=report, raw=cfg)
+        # ---- Optional HTF multi-timeframe track --------------------------- #
+        htf_data = htf_features = htf_model = None
+        if cfg.has_section("HTF_DATA"):
+            htf_data = HtfDataCfg(
+                exchange=cfg.get("HTF_DATA", "exchange", fallback="binance"),
+                pairs=[p.strip().upper() for p in cfg.get("HTF_DATA", "pairs").split(",")],
+                timeframes=[t.strip() for t in cfg.get("HTF_DATA", "timeframes").split(",")],
+                base_timeframe=cfg.get("HTF_DATA", "base_timeframe", fallback="1m"),
+                lookback_days=cfg.getint("HTF_DATA", "lookback_days", fallback=180),
+                output_dir=_resolve(cfg.get("HTF_DATA", "output_dir", fallback="data/ohlcv")),
+            )
+            htf_features = HtfFeatureCfg(
+                vol_window=cfg.getint("HTF_FEATURES", "vol_window", fallback=20),
+                vwap_window=cfg.getint("HTF_FEATURES", "vwap_window", fallback=20),
+                enrich_from_ticks=cfg.getboolean("HTF_FEATURES", "enrich_from_ticks", fallback=True),
+            )
+            htf_model = HtfModelCfg(
+                task_type=cfg.get("HTF_MODEL", "task_type", fallback="classification").lower(),
+                model_type=cfg.get("HTF_MODEL", "model_type", fallback="LightGBM"),
+                target_horizon=cfg.getint("HTF_MODEL", "target_horizon", fallback=5),
+                threshold_bps=cfg.getfloat("HTF_MODEL", "threshold_bps", fallback=5.0),
+                n_splits=cfg.getint("HTF_MODEL", "n_splits", fallback=5),
+                embargo=cfg.getint("HTF_MODEL", "embargo", fallback=10),
+                top_k_features=cfg.getint("HTF_MODEL", "top_k_features", fallback=0),
+                holdout_frac=cfg.getfloat("HTF_MODEL", "holdout_frac", fallback=0.2),
+                model_dir=model.model_dir,
+            )
+            htf_data.output_dir.mkdir(parents=True, exist_ok=True)
+
+        return cls(data=data, model=model, backtest=backtest, report=report, raw=cfg,
+                   htf_data=htf_data, htf_features=htf_features, htf_model=htf_model)

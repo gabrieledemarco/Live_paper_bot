@@ -6,6 +6,13 @@ Examples
     python main.py train
     python main.py evaluate
     python main.py all
+
+High-Timeframe (HTF) multi-timeframe track:
+    python main.py htf-download    # CCXT OHLCV ingestion (incremental)
+    python main.py htf-features    # build + cache feature matrices (sanity check)
+    python main.py htf-train       # purged-CV training, one model per pair
+    python main.py htf-evaluate    # holdout metrics + reports + score table
+    python main.py htf-all         # download -> train -> evaluate
 """
 from __future__ import annotations
 
@@ -64,11 +71,52 @@ def cmd_evaluate(cfg: PipelineConfig) -> None:
     evaluator.evaluate_all()
 
 
+# --------------------------------------------------------------------------- #
+# HTF multi-timeframe stages
+# --------------------------------------------------------------------------- #
+def _require_htf(cfg: PipelineConfig) -> None:
+    if cfg.htf_data is None:
+        raise SystemExit("HTF sections missing from config.ini ([HTF_DATA]/[HTF_MODEL]).")
+
+
+def cmd_htf_download(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    from src.core.ccxt_downloader import CCXTOHLCVDownloader
+    dl = CCXTOHLCVDownloader(output_dir=cfg.htf_data.output_dir,
+                             exchange=cfg.htf_data.exchange)
+    dl.download(cfg.htf_data.pairs, cfg.htf_data.timeframes, cfg.htf_data.lookback_days)
+
+
+def cmd_htf_features(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    from src.models.htf_trainer import HTFTrainer
+    trainer = HTFTrainer(cfg)
+    for pair in cfg.htf_data.pairs:
+        X_df, y, cols = trainer.build_matrix(pair)
+        logging.info("[%s] features: %d rows x %d cols; label balance=%s",
+                     pair, X_df.shape[0], X_df.shape[1],
+                     dict(y.value_counts()) if cfg.htf_model.task_type == "classification"
+                     else f"mean={y.mean():.2e}")
+
+
+def cmd_htf_train(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    from src.models.htf_trainer import HTFTrainer
+    HTFTrainer(cfg).train_all()
+
+
+def cmd_htf_evaluate(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    from src.models.htf_evaluation import HTFEvaluator
+    HTFEvaluator(cfg).evaluate_all()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OFI HFT pipeline")
+    parser = argparse.ArgumentParser(description="OFI HFT + HTF multi-timeframe pipeline")
     parser.add_argument(
         "stage",
-        choices=["download", "ingest", "train", "evaluate", "all"],
+        choices=["download", "ingest", "train", "evaluate", "all",
+                 "htf-download", "htf-features", "htf-train", "htf-evaluate", "htf-all"],
     )
     parser.add_argument("--config", default="config.ini", type=Path)
     args = parser.parse_args()
@@ -76,6 +124,7 @@ def main() -> None:
     cfg = PipelineConfig.load(args.config)
     _setup_logging(cfg)
 
+    # --- tick-level OFI track ---
     if args.stage in {"download", "all"}:
         cmd_download(cfg)
     if args.stage in {"ingest", "all"}:
@@ -84,6 +133,16 @@ def main() -> None:
         cmd_train(cfg)
     if args.stage in {"evaluate", "all"}:
         cmd_evaluate(cfg)
+
+    # --- HTF multi-timeframe track ---
+    if args.stage in {"htf-download", "htf-all"}:
+        cmd_htf_download(cfg)
+    if args.stage == "htf-features":
+        cmd_htf_features(cfg)
+    if args.stage in {"htf-train", "htf-all"}:
+        cmd_htf_train(cfg)
+    if args.stage in {"htf-evaluate", "htf-all"}:
+        cmd_htf_evaluate(cfg)
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ __pycache__/
 .env
 data/raw/
 data/parquet/
+data/ohlcv/
 models_store/*.joblib
 reports/charts/**/*.png
 reports/charts/**/*.json
+reports/htf/
 logs/
 .ipynb_checkpoints/
 .DS_Store
