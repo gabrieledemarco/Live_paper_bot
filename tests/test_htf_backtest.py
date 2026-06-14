@@ -150,5 +150,43 @@ def test_trade_analysis_aggregates():
     assert a["payoff_ratio"] > 0
 
 
+# --------------------------------------------------------------------------- #
+# Task 5 - Bayesian optimization of SL/TP
+# --------------------------------------------------------------------------- #
+def test_optimize_sltp_returns_in_range():
+    from src.models.htf_backtest_runner import optimize_sltp
+    from src.backtest.htf_engine import BacktestParams
+    rng = np.random.default_rng(0)
+    n = 400
+    idx = pd.date_range("2024-01-01", periods=n, freq="1min", tz="UTC")
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.001, n)))
+    bars = pd.DataFrame({"open": close, "high": close * 1.001,
+                         "low": close * 0.999, "close": close}, index=idx)
+    sig = pd.Series(rng.choice([-1, 0, 1], n), index=idx)
+    proba = pd.Series(1.0, index=idx)
+    base = BacktestParams(initial_capital=10000, leverage=3, stop_loss_bps=10,
+                          take_profit_bps=20, taker_fee=0.0004, maker_fee=0.0002,
+                          maintenance_margin=0.005, signal_threshold=0.0)
+    best = optimize_sltp(bars, sig, proba, base, sl_range=(3, 40), tp_range=(3, 80),
+                         n_trials=8, sampler="tpe", objective="sharpe")
+    assert 3 <= best["stop_loss_bps"] <= 40
+    assert 3 <= best["take_profit_bps"] <= 80
+
+
+# --------------------------------------------------------------------------- #
+# Task 6 - signal generation (smoke on cached data)
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not Path("data/ohlcv/BTCUSDT/1m/part.parquet").exists(),
+                    reason="needs cached OHLCV (run htf-download)")
+def test_generate_signals_shapes():
+    from src.models.htf_backtest_runner import HTFBacktestRunner
+    cfg = PipelineConfig.load(Path("config.ini"))
+    runner = HTFBacktestRunner(cfg)
+    bars, sig, proba = runner.generate_signals("BTCUSDT", "rf", segment="validation")
+    assert len(bars) == len(sig) == len(proba)
+    assert set(np.unique(sig)).issubset({-1, 0, 1})
+    assert proba.between(0, 1).all()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
