@@ -23,7 +23,13 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.feature_selection import SelectFromModel
-from sklearn.linear_model import Ridge, RidgeClassifier
+from sklearn.ensemble import (
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import ElasticNet, LogisticRegression, Ridge, RidgeClassifier
 from sklearn.metrics import f1_score, mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -78,9 +84,29 @@ class HTFTrainer:
                           subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1)
             return LGBMClassifier(class_weight="balanced", **common) if is_clf \
                 else LGBMRegressor(**common)
+        if mtype == "histgb":
+            return HistGradientBoostingClassifier(
+                max_iter=400, learning_rate=0.05, max_leaf_nodes=63,
+                class_weight="balanced", random_state=42) if is_clf \
+                else HistGradientBoostingRegressor(
+                    max_iter=400, learning_rate=0.05, max_leaf_nodes=63, random_state=42)
+        if mtype == "randomforest":
+            return RandomForestClassifier(
+                n_estimators=150, max_depth=12, class_weight="balanced",
+                random_state=42, n_jobs=-1) if is_clf \
+                else RandomForestRegressor(
+                    n_estimators=150, max_depth=12, random_state=42, n_jobs=-1)
+        if mtype in ("logistic", "logreg"):
+            if not is_clf:
+                raise ValueError("logistic is a classification-only model.")
+            return LogisticRegression(max_iter=1000, class_weight="balanced")
         if mtype == "ridge":
             return RidgeClassifier(alpha=1.0, class_weight="balanced") if is_clf \
                 else Ridge(alpha=1.0)
+        if mtype == "elasticnet":
+            if is_clf:
+                raise ValueError("elasticnet is a regression-only model.")
+            return ElasticNet(alpha=0.001, l1_ratio=0.5, random_state=42)
         raise ValueError(f"Unknown model_type: {m.model_type}")
 
     def _build_pipeline(self) -> Pipeline:
