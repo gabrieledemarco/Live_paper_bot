@@ -111,12 +111,28 @@ def cmd_htf_evaluate(cfg: PipelineConfig) -> None:
     HTFEvaluator(cfg).evaluate_all()
 
 
+def cmd_htf_backtest(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    if cfg.htf_backtest is None:
+        raise SystemExit("Missing [HTF_BACKTEST] section in config.ini.")
+    from src.models.htf_backtest_runner import HTFBacktestRunner
+    from src.report.htf_dashboard import build_dashboard
+    runner = HTFBacktestRunner(cfg)
+    results = runner.run_all()
+    charts_root = cfg.report.charts_dir.parent / "htf" / "backtest"
+    out = charts_root / "dashboard.html"
+    build_dashboard(results, charts_root=charts_root, out_path=out)
+    logging.info("Dashboard written -> %s", out)
+    print(f"\nHTF backtest dashboard: {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OFI HFT + HTF multi-timeframe pipeline")
     parser.add_argument(
         "stage",
         choices=["download", "ingest", "train", "evaluate", "all",
-                 "htf-download", "htf-features", "htf-train", "htf-evaluate", "htf-all"],
+                 "htf-download", "htf-features", "htf-train", "htf-evaluate", "htf-all",
+                 "htf-backtest"],
     )
     parser.add_argument("--config", default="config.ini", type=Path)
     args = parser.parse_args()
@@ -143,6 +159,8 @@ def main() -> None:
         cmd_htf_train(cfg)
     if args.stage in {"htf-evaluate", "htf-all"}:
         cmd_htf_evaluate(cfg)
+    if args.stage == "htf-backtest":
+        cmd_htf_backtest(cfg)
 
 
 if __name__ == "__main__":
