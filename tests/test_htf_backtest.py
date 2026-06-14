@@ -114,5 +114,20 @@ def test_short_mirror_take_profit():
     assert tr.iloc[0]["pnl"] > 0
 
 
+# --------------------------------------------------------------------------- #
+# Task 3 - KPIs
+# --------------------------------------------------------------------------- #
+def test_kpis_keys_present():
+    from src.backtest.htf_engine import HTFBacktester, backtest_kpis
+    bars = _bars([[100, 100, 100, 100]] * 3 + [[100, 102, 100, 101]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params(take_profit_bps=50.0)).run(bars, sig, proba)
+    k = backtest_kpis(res, periods_per_year=365 * 24 * 60)
+    for key in ("sharpe", "sortino", "max_drawdown", "total_return", "n_trades",
+                "win_rate", "profit_factor", "pct_liquidations"):
+        assert key in k
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
