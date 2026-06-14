@@ -129,5 +129,26 @@ def test_kpis_keys_present():
         assert key in k
 
 
+# --------------------------------------------------------------------------- #
+# Task 4 - trade analysis
+# --------------------------------------------------------------------------- #
+def test_trade_analysis_aggregates():
+    from src.models.htf_trade_analysis import analyze_trades
+    trades = pd.DataFrame({
+        "side": [1, -1, 1, 1],
+        "pnl": [100.0, -50.0, 30.0, -20.0],
+        "duration_bars": [3, 5, 2, 4],
+        "exit_reason": ["TP", "SL", "TP", "SL"],
+        "return_bps": [50, -25, 15, -10],
+        "mfe_bps": [60, 10, 20, 5], "mae_bps": [10, 30, 5, 15],
+    })
+    a = analyze_trades(trades)
+    assert a["n_trades"] == 4
+    assert abs(a["win_rate"] - 0.5) < 1e-9
+    assert a["exit_reason_counts"]["TP"] == 2
+    assert "long" in a["by_side"] and "short" in a["by_side"]
+    assert a["payoff_ratio"] > 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
