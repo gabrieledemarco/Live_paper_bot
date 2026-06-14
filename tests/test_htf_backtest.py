@@ -188,5 +188,22 @@ def test_generate_signals_shapes():
     assert proba.between(0, 1).all()
 
 
+# --------------------------------------------------------------------------- #
+# Task 8 - HTML dashboard
+# --------------------------------------------------------------------------- #
+def test_dashboard_builds_html(tmp_path):
+    from src.report.htf_dashboard import build_dashboard
+    results = {"rf/BTCUSDT": {"config": "rf", "pair": "BTCUSDT", "sl_bps": 12.0,
+        "tp_bps": 25.0, "kpis": {"sharpe": 1.2, "sortino": 1.5, "total_return": 0.03,
+        "n_trades": 40, "win_rate": 0.52, "profit_factor": 1.1, "expectancy": 2.0,
+        "max_drawdown": -0.05, "pct_liquidations": 0.0},
+        "analysis": {"n_trades": 40, "payoff_ratio": 1.2, "exit_reason_counts": {"TP": 20, "SL": 20}},
+        "fee_sweep": [{"fee_mult": 1.0, "sharpe": 1.2, "total_return": 0.03, "n_trades": 40}],
+        "opt": {"best_value": 1.2}}}
+    html = build_dashboard(results, charts_root=tmp_path, out_path=tmp_path / "dashboard.html")
+    assert (tmp_path / "dashboard.html").exists()
+    assert "BTCUSDT" in html and "Sharpe" in html
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
