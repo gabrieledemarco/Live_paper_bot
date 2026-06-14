@@ -38,14 +38,22 @@ def optimize_sltp(bars: pd.DataFrame, signal: pd.Series, proba: pd.Series,
                   tp_range: Tuple[float, float], n_trials: int = 50,
                   sampler: str = "gp", objective: str = "sharpe") -> Dict[str, Any]:
     """Bayesian-optimize SL/TP (bps) maximizing the backtest objective."""
+    import importlib.util
+
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    if sampler == "gp":
+    # Optuna's GPSampler is built on PyTorch. When torch is unavailable (e.g. no
+    # Python 3.14 wheels) fall back to TPE - still a Bayesian (SMBO) method.
+    use_gp = sampler == "gp" and importlib.util.find_spec("torch") is not None
+    if use_gp:
         try:
             smp = optuna.samplers.GPSampler(seed=42)
         except Exception:  # pragma: no cover - GP extras missing
-            smp = optuna.samplers.TPESampler(seed=42)
-    else:
+            use_gp = False
+    if not use_gp:
+        if sampler == "gp":
+            logger.warning("GPSampler needs torch (unavailable); using TPESampler "
+                           "(still Bayesian optimization).")
         smp = optuna.samplers.TPESampler(seed=42)
 
     def obj(trial: "optuna.Trial") -> float:
