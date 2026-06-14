@@ -93,6 +93,29 @@ class HtfModelCfg:
 
 
 @dataclass
+class HtfBacktestCfg:
+    initial_capital: float
+    leverage: float
+    stop_loss_bps: float
+    take_profit_bps: float
+    taker_fee: float
+    maker_fee: float
+    maintenance_margin: float
+    signal_threshold: float
+    optimize_sltp: bool
+    opt_sampler: str
+    opt_n_trials: int
+    opt_objective: str
+    sl_bps_min: float
+    sl_bps_max: float
+    tp_bps_min: float
+    tp_bps_max: float
+    fee_grid: List[float]
+    window: int
+    meta_thr: float
+
+
+@dataclass
 class PipelineConfig:
     data: DataCfg
     model: ModelCfg
@@ -102,6 +125,7 @@ class PipelineConfig:
     htf_data: Optional[HtfDataCfg] = None
     htf_features: Optional[HtfFeatureCfg] = None
     htf_model: Optional[HtfModelCfg] = None
+    htf_backtest: Optional[HtfBacktestCfg] = None
 
     @classmethod
     def load(cls, path: str | Path = "config.ini") -> "PipelineConfig":
@@ -196,5 +220,31 @@ class PipelineConfig:
             )
             htf_data.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # ---- Optional HTF cost-aware backtest ----------------------------- #
+        htf_backtest = None
+        if cfg.has_section("HTF_BACKTEST"):
+            htf_backtest = HtfBacktestCfg(
+                initial_capital=cfg.getfloat("HTF_BACKTEST", "initial_capital", fallback=10000.0),
+                leverage=cfg.getfloat("HTF_BACKTEST", "leverage", fallback=3.0),
+                stop_loss_bps=cfg.getfloat("HTF_BACKTEST", "stop_loss_bps", fallback=10.0),
+                take_profit_bps=cfg.getfloat("HTF_BACKTEST", "take_profit_bps", fallback=20.0),
+                taker_fee=cfg.getfloat("HTF_BACKTEST", "taker_fee", fallback=0.0004),
+                maker_fee=cfg.getfloat("HTF_BACKTEST", "maker_fee", fallback=0.0002),
+                maintenance_margin=cfg.getfloat("HTF_BACKTEST", "maintenance_margin", fallback=0.005),
+                signal_threshold=cfg.getfloat("HTF_BACKTEST", "signal_threshold", fallback=0.45),
+                optimize_sltp=cfg.getboolean("HTF_BACKTEST", "optimize_sltp", fallback=True),
+                opt_sampler=cfg.get("HTF_BACKTEST", "opt_sampler", fallback="gp").lower(),
+                opt_n_trials=cfg.getint("HTF_BACKTEST", "opt_n_trials", fallback=50),
+                opt_objective=cfg.get("HTF_BACKTEST", "opt_objective", fallback="sharpe").lower(),
+                sl_bps_min=cfg.getfloat("HTF_BACKTEST", "sl_bps_min", fallback=3.0),
+                sl_bps_max=cfg.getfloat("HTF_BACKTEST", "sl_bps_max", fallback=40.0),
+                tp_bps_min=cfg.getfloat("HTF_BACKTEST", "tp_bps_min", fallback=3.0),
+                tp_bps_max=cfg.getfloat("HTF_BACKTEST", "tp_bps_max", fallback=80.0),
+                fee_grid=[float(x) for x in cfg.get("HTF_BACKTEST", "fee_grid", fallback="0.5,1,2").split(",")],
+                window=cfg.getint("HTF_BACKTEST", "window", fallback=8),
+                meta_thr=cfg.getfloat("HTF_BACKTEST", "meta_thr", fallback=0.55),
+            )
+
         return cls(data=data, model=model, backtest=backtest, report=report, raw=cfg,
-                   htf_data=htf_data, htf_features=htf_features, htf_model=htf_model)
+                   htf_data=htf_data, htf_features=htf_features, htf_model=htf_model,
+                   htf_backtest=htf_backtest)

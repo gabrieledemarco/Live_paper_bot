@@ -1,0 +1,118 @@
+"""Unit tests for the HTF cost-aware backtester.
+
+Run with:  python -m pytest tests/test_htf_backtest.py -q
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.core.config_loader import PipelineConfig
+
+
+# --------------------------------------------------------------------------- #
+# Task 1 - config
+# --------------------------------------------------------------------------- #
+def test_htf_backtest_config_loads():
+    cfg = PipelineConfig.load(Path("config.ini"))
+    bt = cfg.htf_backtest
+    assert bt is not None
+    assert bt.leverage == 3
+    assert bt.stop_loss_bps == 10
+    assert bt.take_profit_bps == 20
+    assert bt.optimize_sltp is True
+    assert bt.opt_sampler in ("gp", "tpe")
+    assert bt.sl_bps_min < bt.sl_bps_max
+    assert bt.fee_grid == [0.5, 1.0, 2.0]
+
+
+# --------------------------------------------------------------------------- #
+# Task 2 - engine mechanics
+# --------------------------------------------------------------------------- #
+def _bars(rows):
+    idx = pd.date_range("2024-01-01", periods=len(rows), freq="1min", tz="UTC")
+    return pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
+
+
+def _params(**kw):
+    from src.backtest.htf_engine import BacktestParams
+    base = dict(initial_capital=10000.0, leverage=3.0, stop_loss_bps=50.0,
+                take_profit_bps=100.0, taker_fee=0.0, maker_fee=0.0,
+                maintenance_margin=0.005, signal_threshold=0.0)
+    base.update(kw)
+    return BacktestParams(**base)
+
+
+def test_long_hits_take_profit():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [100, 100, 100, 100],
+                  [100, 101.5, 100, 101], [101, 101, 100, 100]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params()).run(bars, sig, proba)
+    tr = res["trades"]
+    assert len(tr) == 1
+    assert tr.iloc[0]["exit_reason"] == "TP"
+    assert tr.iloc[0]["side"] == 1
+    assert tr.iloc[0]["pnl"] > 0
+
+
+def test_long_hits_stop_loss():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [100, 100, 100, 100],
+                  [100, 100.2, 99.0, 99.5], [99, 99, 98, 98]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params()).run(bars, sig, proba)
+    assert res["trades"].iloc[0]["exit_reason"] == "SL"
+    assert res["trades"].iloc[0]["pnl"] < 0
+
+
+def test_both_touched_worst_case_is_stop():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [100, 100, 100, 100],
+                  [100, 101.5, 99.0, 100], [100, 100, 100, 100]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params()).run(bars, sig, proba)
+    assert res["trades"].iloc[0]["exit_reason"] == "SL"
+
+
+def test_liquidation_before_stop():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [100, 100, 100, 100],
+                  [100, 100, 60.0, 65.0], [65, 65, 60, 60]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params(stop_loss_bps=5000.0)).run(bars, sig, proba)
+    assert res["trades"].iloc[0]["exit_reason"] == "LIQUIDATION"
+
+
+def test_no_lookahead_entry_at_next_open():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [102, 103, 102, 103],
+                  [103, 105, 103, 105], [105, 105, 104, 104]])
+    sig = pd.Series([1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params(take_profit_bps=10.0)).run(bars, sig, proba)
+    assert abs(res["trades"].iloc[0]["entry_price"] - 102.0) < 1e-9
+
+
+def test_short_mirror_take_profit():
+    from src.backtest.htf_engine import HTFBacktester
+    bars = _bars([[100, 100, 100, 100], [100, 100, 100, 100],
+                  [100, 100, 98.5, 99], [99, 99, 98, 98]])
+    sig = pd.Series([-1, 0, 0, 0], index=bars.index)
+    proba = pd.Series([1.0, 0, 0, 0], index=bars.index)
+    res = HTFBacktester(_params()).run(bars, sig, proba)
+    tr = res["trades"]
+    assert tr.iloc[0]["side"] == -1
+    assert tr.iloc[0]["exit_reason"] == "TP"
+    assert tr.iloc[0]["pnl"] > 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
