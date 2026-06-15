@@ -86,11 +86,18 @@ def _params(cfg: PipelineConfig, sl: float, tp: float) -> BacktestParams:
                           time_stop_bars=s.label_horizon)
 
 
-def walk_forward(cfg: PipelineConfig, pair: str) -> Dict:
+def walk_forward(cfg: PipelineConfig, pair: str, use_orderflow: bool = False) -> Dict:
     runner = HTFBacktestRunner(cfg)
     s, b = cfg.htf_strategy_v2, cfg.htf_backtest
     emb = cfg.htf_model.embargo
     X_df, bars, _ = runner._matrix(pair)
+    if use_orderflow:
+        from src.core.orderflow_features import assemble_orderflow
+        of = assemble_orderflow(pair, X_df.index, cfg.orderflow.roll_window,
+                                cfg.htf_data.output_dir, base_tf=cfg.htf_data.base_timeframe)
+        for c in of.columns:
+            X_df[c] = of[c].reindex(X_df.index).fillna(0.0)
+        logger.info("[%s] walk-forward WITH %d order-flow features", pair, len(of.columns))
     F = X_df.to_numpy(np.float64)
     n = len(F)
     close = bars["close"].to_numpy(float)
@@ -206,14 +213,16 @@ def monte_carlo(pooled: pd.DataFrame) -> Dict:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    use_of = "--orderflow" in sys.argv
     cfg = PipelineConfig.load(Path("config.ini"))
-    out_root = cfg.report.charts_dir.parent / "htf" / "walk_forward"
+    suffix = "_orderflow" if use_of else ""
+    out_root = cfg.report.charts_dir.parent / "htf" / f"walk_forward{suffix}"
     out_root.mkdir(parents=True, exist_ok=True)
     results: Dict[str, dict] = {}
 
     for pair in cfg.htf_data.pairs:
-        logger.info("\n=== walk-forward %s ===", pair)
-        wf = walk_forward(cfg, pair)
+        logger.info("\n=== walk-forward%s %s ===", suffix, pair)
+        wf = walk_forward(cfg, pair, use_orderflow=use_of)
         mc = monte_carlo(wf["pooled"])
 
         oos_eq = (1.0 + wf["oos_ret"]).cumprod() * cfg.htf_backtest.initial_capital

@@ -7,6 +7,33 @@ import pandas as pd
 _EPS = 1e-12
 
 
+def assemble_orderflow(pair: str, base_index: pd.DatetimeIndex, roll_window: int,
+                       spot_output_dir, of_dir: str = "data/orderflow",
+                       perp_dir: str = "data/ohlcv_um", base_tf: str = "1m") -> pd.DataFrame:
+    """Assemble cached order-flow features (klines flow + funding + basis) onto
+    the base index. Reads parquet caches written by the Phase-1 ingestion; does
+    NOT ingest. aggTrades are intentionally excluded here (RAM/schema)."""
+    from pathlib import Path
+    parts = []
+    kp = Path(of_dir) / pair.upper() / "klines_taker.parquet"
+    if kp.exists():
+        kl = pd.read_parquet(kp).set_index("timestamp").reindex(base_index).ffill().fillna(0.0)
+        parts.append(build_flow_features(kl, roll_window=roll_window))
+    fp = Path(of_dir) / pair.upper() / "funding.parquet"
+    if fp.exists():
+        fd = pd.read_parquet(fp).set_index("timestamp")
+        parts.append(build_funding_features(fd, base_index, roll_window))
+    pp = Path(perp_dir) / pair.upper() / base_tf / "part.parquet"
+    sp = Path(spot_output_dir) / pair.upper() / base_tf / "part.parquet"
+    if pp.exists() and sp.exists():
+        perp_close = pd.read_parquet(pp).set_index("timestamp")["close"]
+        spot_close = pd.read_parquet(sp).set_index("timestamp")["close"]
+        parts.append(build_basis_features(perp_close, spot_close, base_index, roll_window))
+    if not parts:
+        return pd.DataFrame(index=base_index)
+    return pd.concat(parts, axis=1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
 def build_flow_features(klines: pd.DataFrame, roll_window: int = 60) -> pd.DataFrame:
     """Taker-flow imbalance + CVD features from klines taker-buy volume."""
     vol = klines["volume"].to_numpy(float)
