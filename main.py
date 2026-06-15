@@ -126,13 +126,29 @@ def cmd_htf_backtest(cfg: PipelineConfig) -> None:
     print(f"\nHTF backtest dashboard: {out}")
 
 
+def cmd_htf_strategy_v2(cfg: PipelineConfig) -> None:
+    _require_htf(cfg)
+    if cfg.htf_strategy_v2 is None:
+        raise SystemExit("Missing [HTF_STRATEGY_V2] section in config.ini.")
+    from src.models.htf_strategy_v2 import HTFStrategyV2Runner
+    from src.report.htf_dashboard import build_dashboard
+    results = HTFStrategyV2Runner(cfg).run_all()
+    # build_dashboard resolves charts as charts_root/<config>/<pair>; v2 writes to
+    # htf/strategy_v2/<pair>, so charts_root must be the 'htf' dir.
+    charts_root = cfg.report.charts_dir.parent / "htf"
+    out = charts_root / "strategy_v2" / "dashboard.html"
+    build_dashboard(results, charts_root=charts_root, out_path=out)
+    logging.info("Strategy v2 dashboard -> %s", out)
+    print(f"\nHTF strategy v2 dashboard: {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OFI HFT + HTF multi-timeframe pipeline")
     parser.add_argument(
         "stage",
         choices=["download", "ingest", "train", "evaluate", "all",
                  "htf-download", "htf-features", "htf-train", "htf-evaluate", "htf-all",
-                 "htf-backtest"],
+                 "htf-backtest", "htf-strategy-v2"],
     )
     parser.add_argument("--config", default="config.ini", type=Path)
     args = parser.parse_args()
@@ -161,6 +177,8 @@ def main() -> None:
         cmd_htf_evaluate(cfg)
     if args.stage == "htf-backtest":
         cmd_htf_backtest(cfg)
+    if args.stage == "htf-strategy-v2":
+        cmd_htf_strategy_v2(cfg)
 
 
 if __name__ == "__main__":
