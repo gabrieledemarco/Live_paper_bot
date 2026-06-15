@@ -169,6 +169,7 @@ class HTFFeatureBuilder:
         self,
         ohlcv_by_tf: Dict[str, pd.DataFrame],
         tick_stream: Optional[pd.DataFrame] = None,
+        orderflow: Optional[pd.DataFrame] = None,
     ) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
         """Return ``(feature_matrix, label, feature_columns)`` on the base TF.
 
@@ -222,6 +223,13 @@ class HTFFeatureBuilder:
             n_cov = int(has_true.sum())
             logger.info("Tick enrichment: %d / %d base bars have true microstructure",
                         n_cov, len(merged))
+
+        # Optional perpetual order-flow features merged onto the base index.
+        if orderflow is not None and not orderflow.empty:
+            of = orderflow.reindex(merged.index)
+            for col in of.columns:
+                merged[col] = of[col]
+            feature_cols += [c for c in of.columns if c not in feature_cols]
 
         merged = merged.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
