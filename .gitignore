@@ -6,6 +6,8 @@ __pycache__/
 data/raw/
 data/parquet/
 data/ohlcv/
+data/ohlcv_um/
+data/orderflow/
 models_store/*.joblib
 reports/charts/**/*.png
 reports/charts/**/*.json
