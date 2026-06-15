@@ -118,35 +118,45 @@ def freeze(
     return params
 
 
-def _load_latest_opt(cfg: PipelineConfig, pair: str) -> Dict[str, Any]:
-    """Try loading the strategy v2 optimization results from disk."""
-    v2_summary = (
-        cfg.report.charts_dir.parent / "htf" / "strategy_v2" / pair / "summary.json"
-    )
-    if v2_summary.exists():
-        data = json.loads(v2_summary.read_text())
-        return data
+def _load_latest_opt(cfg, pair: str) -> Dict[str, Any]:
+    """Load the BEST validated strategy parameters from disk.
 
+    Priority order matters: v2.1 (with regime gate) is the configuration that
+    survived the walk-forward + permutation test on BTC; it MUST be preferred
+    over the bare v2 backtest summary, which does not carry favorable_cells
+    and would freeze a strictly worse strategy if picked first.
+    """
     v21_summary = (
         cfg.report.charts_dir.parent / "htf" / "strategy_v2_1" / "results.json"
     )
     if v21_summary.exists():
         all_data = json.loads(v21_summary.read_text())
         pd_data = all_data.get(pair, {})
-        return {
-            "entry_threshold": pd_data.get("thr", 0.55),
-            "stop_loss_bps": pd_data.get("sl_bps", 15.0),
-            "take_profit_bps": pd_data.get("tp_bps", 30.0),
-            "favorable_cells": pd_data.get("favorable_cells", []),
-        }
+        if pd_data:
+            logger.info("Using strategy v2.1 params (validated) for %s", pair)
+            return {
+                "entry_threshold": pd_data.get("thr", 0.55),
+                "stop_loss_bps": pd_data.get("sl_bps", 15.0),
+                "take_profit_bps": pd_data.get("tp_bps", 30.0),
+                "favorable_cells": pd_data.get("favorable_cells", []),
+            }
+
+    v2_summary = (
+        cfg.report.charts_dir.parent / "htf" / "strategy_v2" / pair / "summary.json"
+    )
+    if v2_summary.exists():
+        logger.warning("Falling back to bare strategy_v2 summary for %s "
+                       "(no regime gate)", pair)
+        return json.loads(v2_summary.read_text())
 
     logger.warning("No prior opt results found; using config defaults")
     return {}
 
 
-def _compute_vol_terciles(cfg: PipelineConfig, pair: str) -> Tuple[float, float]:
+def _compute_vol_terciles(cfg, pair: str) -> Tuple[float, float]:
     """Compute the volatility tercile thresholds on the full dataset."""
     try:
+        from src.models.htf_backtest_runner import HTFBacktestRunner
         runner = HTFBacktestRunner(cfg)
         ohlcv60 = runner.dl.load(pair, "60m")
         c60 = ohlcv60.sort_index()

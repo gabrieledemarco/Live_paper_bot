@@ -1,13 +1,17 @@
 {
   "entry_threshold": 0.7484544074247415,
-  "sl_bps": 10.0,
-  "tp_bps": 20.0,
+  "sl_bps": 32.32754339786574,
+  "tp_bps": 35.317268318376144,
   "label_horizon": 30,
   "leverage": 2.0,
   "taker_fee": 0.0004,
   "maker_fee": 0.0002,
   "maintenance_margin": 0.005,
-  "favorable_cells": [],
+  "favorable_cells": [
+    "low_up",
+    "mid_down",
+    "mid_up"
+  ],
   "feature_columns": [
     "ret",
     "close_vwap_dev",
@@ -55,8 +59,8 @@
     "range_pct_60m"
   ],
   "vol_terciles_low_hi": [
-    0.0033558887790836192,
-    0.004753433385850721
+    0.0033591713380136225,
+    0.004757321755548251
   ],
   "roll_window": 60,
   "pair": "BTCUSDT"
