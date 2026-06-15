@@ -42,10 +42,6 @@ def _close():
         _session.close()
 
 
-_web_dir = Path(__file__).parent / "web"
-if _web_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_web_dir), html=True), name="web")
-
 _session = None
 
 
@@ -276,3 +272,8 @@ def _calc_kpis(run_id: str) -> Dict[str, Any]:
 @app.get("/kpis")
 def get_kpis(run_id: str = Query(...)):
     return _calc_kpis(run_id)
+
+
+_web_dir = Path(__file__).parent / "web"
+if _web_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_web_dir), html=True), name="web")
