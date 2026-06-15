@@ -211,7 +211,7 @@ class LiveTrader:
             logger.debug("regime_cell failed: %s", exc)
             return "unknown"
 
-    def _predict(self, features: pd.Series) -> Dict[str, Any]:
+    def _predict(self, features: pd.Series, ts: Optional[datetime] = None) -> Dict[str, Any]:
         """Run the bundle models and gating logic."""
         f = features.to_numpy(np.float64).reshape(1, -1)
         m_long = self.bundle["model_long"]
@@ -232,15 +232,15 @@ class LiveTrader:
             sig = -1
             size_frac = (ps - thr) / max(1e-6, 1.0 - thr)
 
-        regime_cell = "unknown"
+        regime_cell = "n/a"     # not computed when no candidate signal
         gate_passed = 1
         if sig != 0:
-            regime_cell = ""
-            gate_passed = (
-                gate(pl, ps, regime_cell, self.params.get("favorable_cells", []), thr)
-                if sig != 0
-                else 0
-            )
+            # Compute the real 60m regime cell only when there is a candidate
+            # signal — avoids extra REST calls every minute. The gate then
+            # decides whether the (vol x trend) regime is in the favorable set.
+            regime_cell = self._regime_cell(ts or datetime.now(timezone.utc))
+            favorable = self.params.get("favorable_cells", [])
+            gate_passed = 1 if gate(pl, ps, regime_cell, favorable, thr) else 0
             if not gate_passed:
                 sig = 0
                 size_frac = 0.0
@@ -311,9 +311,8 @@ class LiveTrader:
         latest_feat = feat_result.iloc[-1]
         latest_bar = new_bars.iloc[-1]
 
-        pred = self._predict(latest_feat)
-
         now = latest_ts.to_pydatetime().replace(tzinfo=timezone.utc)
+        pred = self._predict(latest_feat, ts=now)
 
         signal_for_fill = None
         if pred["sig"] != 0 and pred["gate_passed"]:
