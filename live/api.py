@@ -47,14 +47,51 @@ _session = None
 
 @app.get("/health")
 def health():
+    """Auto-callable health endpoint (used by Render Health Check + UptimeRobot).
+
+    Returns enough info for an external monitor to detect a stale trader
+    (heartbeat older than ~3 minutes) without scanning other endpoints.
+    """
+    now = datetime.now(timezone.utc)
+    payload: Dict[str, Any] = {
+        "status": "ok",
+        "db": False,
+        "server_time": now.isoformat(),
+        "last_heartbeat": None,
+        "staleness_seconds": None,
+        "fresh": False,
+        "current_run_id": None,
+        "latest_equity": None,
+        "open_position_side": 0,
+    }
     db = _db()
     try:
         db.execute(text("SELECT 1"))
-        last = db.query(EquitySnapshot).order_by(EquitySnapshot.ts.desc()).first()
-        last_heartbeat = last.ts.isoformat() if last else None
-    except Exception:
-        return {"status": "error", "db": False, "last_heartbeat": None}
-    return {"status": "ok", "db": True, "last_heartbeat": last_heartbeat}
+        payload["db"] = True
+
+        run = db.query(Run).order_by(Run.started_at.desc()).first()
+        if run is not None:
+            payload["current_run_id"] = run.id
+
+        last_eq = (
+            db.query(EquitySnapshot).order_by(EquitySnapshot.ts.desc()).first()
+        )
+        if last_eq is not None:
+            payload["last_heartbeat"] = last_eq.ts.isoformat()
+            payload["latest_equity"] = float(last_eq.equity)
+            delta = (now - last_eq.ts).total_seconds()
+            payload["staleness_seconds"] = round(delta, 1)
+            payload["fresh"] = delta <= 180.0  # 3-min freshness budget
+
+        last_pos = (
+            db.query(Position).order_by(Position.ts.desc()).first()
+        )
+        if last_pos is not None:
+            payload["open_position_side"] = int(last_pos.side)
+    except Exception as exc:
+        payload["status"] = "error"
+        payload["error"] = str(exc)
+    return payload
 
 
 @app.get("/runs")

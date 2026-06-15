@@ -63,14 +63,20 @@ class LiveTrader:
         self._running = True
         self._heartbeat_interval = 60
         self._last_heartbeat_ts: Optional[datetime] = None
-        # Singleton ccxt client (reuses the rate limiter across calls) and a
-        # cooldown timestamp honored on Binance HTTP 418/429 bans.
+        # Singleton ccxt client (reuses the rate limiter across calls) for the
+        # low-frequency REST calls (funding rate, 60m regime). Klines come from
+        # the websocket below so the per-minute polling does not touch REST.
         import ccxt as _ccxt
         self._exchange = _ccxt.binanceusdm({
             "enableRateLimit": True,
             "timeout": 30000,
         })
         self._cooldown_until: float = 0.0
+
+        # Background websocket stream of CLOSED 1m klines (no IP-ban risk).
+        from live.ws_klines import KlineStream
+        self._ws = KlineStream(pair=self.pair, interval=_BASE_TF, buffer_size=240)
+        self._ws.start()
 
         logger.info(
             "LiveTrader initialized; run_id=%s bundle_hash=%s",
@@ -93,10 +99,16 @@ class LiveTrader:
         return run.id
 
     def fetch_latest_bars(self) -> Optional[pd.DataFrame]:
-        """Fetch the latest N minutes of 1m klines from Binance public API.
+        """Return the latest closed 1m klines from the websocket buffer.
 
-        Uses ccxt with no API keys (public endpoint only).
+        Falls back to a single REST warm-up call only when the WS buffer is
+        still empty (typically the first ~60 seconds after startup) and we are
+        not currently in a rate-limit cooldown.
         """
+        df = self._ws.latest_bars(n=180)
+        if not df.empty:
+            return df
+
         if time.time() < self._cooldown_until:
             return None
         try:
