@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HTF · Live Paper — research note</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="docs">
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">HTF&nbsp;·&nbsp;LIVE&nbsp;PAPER</span>
+    <span class="sub">research note &nbsp;·&nbsp; v2.1 (order-flow gated)</span>
+  </div>
+  <nav class="topnav">
+    <a class="navlink" href="/">DASHBOARD</a>
+    <span class="sep">/</span>
+    <a class="navlink active" href="/docs.html">DOCS</a>
+  </nav>
+</header>
+
+<article class="paper">
+
+  <section class="lede">
+    <p class="kicker">Research note &nbsp;·&nbsp; June 2026</p>
+    <h1 class="display">
+      A regime-gated <span class="serif">order-flow</span> strategy on BTC/USDT perp,
+      and what we honestly know about its edge.
+    </h1>
+    <p class="standfirst">
+      The model deployed in this paper account is the v2.1 configuration that survived a
+      walk-forward + Monte Carlo permutation test on BTC (p = 0.014, 5/5 OOS windows
+      positive). Live trading here is the <em class="serif">forward&nbsp;test</em> the
+      offline pipeline could not produce. This page documents the data, the procedure,
+      the model, and the strategy &mdash; including what we don't know.
+    </p>
+  </section>
+
+  <section class="toc">
+    <span class="lbl">CONTENTS</span>
+    <ol>
+      <li><a href="#data">Data</a></li>
+      <li><a href="#proc">Procedure &mdash; how we got here</a></li>
+      <li><a href="#model">The model</a></li>
+      <li><a href="#strat">The strategy</a></li>
+      <li><a href="#exec">Execution &amp; risk</a></li>
+      <li><a href="#val">Statistical validation</a></li>
+      <li><a href="#known">Honest caveats</a></li>
+      <li><a href="#repro">Reproducibility</a></li>
+    </ol>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="data">
+    <h2>Data</h2>
+    <p>
+      Everything is built on <em class="serif">free, public</em> Binance market data.
+      The live model uses USD&#8209;M perpetual futures (ticker <span class="mono">BTCUSDT</span>),
+      with three streams stitched on the same one-minute timeline:
+    </p>
+    <dl class="kv">
+      <div>
+        <dt>OHLCV</dt>
+        <dd>1&nbsp;m / 5&nbsp;m / 15&nbsp;m / 60&nbsp;m candles, 180-day rolling window
+        (~259k base bars), via <span class="mono">ccxt&nbsp;binanceusdm</span>.</dd>
+      </div>
+      <div>
+        <dt>Order&nbsp;flow</dt>
+        <dd>Raw klines including taker-buy volume (CVD), funding rate (8h),
+        perp&minus;spot basis. From the raw <span class="mono">fapi</span> endpoint
+        and <span class="mono">fetchFundingRateHistory</span>.</dd>
+      </div>
+      <div>
+        <dt>Live feed</dt>
+        <dd>Public websocket <span class="mono">wss://fstream.binance.com/ws/btcusdt@kline_1m</span>;
+        no API keys, no rate-limit exposure.</dd>
+      </div>
+    </dl>
+    <p class="note">
+      ETH was tested with the identical pipeline. The walk-forward permutation
+      <span class="mono">p = 0.889</span> there: we kept it out of production.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="proc">
+    <h2>Procedure &mdash; how we got here</h2>
+    <p>
+      The current model is the third iteration. The first two failed; we kept them
+      visible to make this credible.
+    </p>
+    <ol class="steps">
+      <li>
+        <span class="step-tag">v1 &nbsp;·&nbsp; baseline</span>
+        <p>
+          LightGBM direction classifier on multi-timeframe OHLCV proxies (44 features),
+          tercile labels at <span class="mono">t+5min</span>. ROC-AUC ~ 0.62 in-sample,
+          but on the cost-aware backtest <strong>all six configs lost hard</strong>
+          (&minus;65% to &minus;93% on validation). Reason: the label was
+          <em class="serif">direction</em>, the strategy traded
+          <em class="serif">barriers</em>, and stops fired ~2&times; more than targets.
+        </p>
+      </li>
+      <li>
+        <span class="step-tag">v2 &nbsp;·&nbsp; aligned + selective + cost-realistic</span>
+        <p>
+          Two binary classifiers <span class="mono">P(win|long)</span> and
+          <span class="mono">P(win|short)</span>, trained on
+          <em class="serif">triple-barrier</em> outcomes (= the actual TP-before-SL the
+          strategy will trade). Entry threshold, SL and TP are
+          <strong>jointly Bayesian-optimised</strong> on net Sharpe. Maker entries,
+          taker exits, leverage 2&times;, confidence-scaled sizing. Result: near
+          break-even (BTC &minus;1.0%, ETH &minus;0.1%) &mdash; the bleed of v1
+          was gone.
+        </p>
+      </li>
+      <li>
+        <span class="step-tag">v2.1 &nbsp;·&nbsp; regime gate &nbsp;+&nbsp; order flow</span>
+        <p>
+          We tagged every v2 validation trade by 60-minute regime cell
+          (volatility tercile &times; trend sign). PnL was clearly
+          <em class="serif">regime-structured</em>: BTC's edge lives in
+          trend-up / mid&shy;-vol; ETH's in high&shy;-vol. Then we added free
+          order-flow features (CVD, funding, basis) and re-ran the rigorous test.
+          BTC's permutation p-value dropped from <span class="mono">0.63 &rarr; 0.014</span>;
+          all 5 walk-forward windows positive; ETH stayed null. <strong>This
+          configuration is what the paper account runs.</strong>
+        </p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="model">
+    <h2>The model</h2>
+    <p>
+      Two independent LightGBM classifiers wrapped in a sklearn
+      <span class="mono">StandardScaler</span> pipeline.
+      Each predicts the probability that a hypothetical
+      <em class="serif">long</em> (resp. <em class="serif">short</em>) entry at the
+      current minute close would hit a fixed reference
+      take-profit before its stop within the next 30 bars.
+    </p>
+    <pre class="codeblock"><code>P_long  = model_long.predict_proba(features_t)[:, 1]
+P_short = model_short.predict_proba(features_t)[:, 1]</code></pre>
+    <p>
+      The labels were generated with conservative reference barriers
+      (<span class="mono">ref_sl=15&nbsp;bps</span>,
+      <span class="mono">ref_tp=30&nbsp;bps</span>) &mdash; we deliberately
+      <em class="serif">decoupled</em> training labels from execution barriers, so the
+      Bayesian optimiser can pick execution SL/TP without forcing a retrain.
+    </p>
+    <h3>Features (44 columns)</h3>
+    <ul class="cols">
+      <li><strong>Price / volume</strong> &mdash; close-vwap deviation, returns, range,
+        volume z-score, volume std.</li>
+      <li><strong>Microstructure proxies</strong> &mdash; volume imbalance, OBI proxy,
+        trade-flow proxy, Garman-Klass and Parkinson volatility, Amihud illiquidity.</li>
+      <li><strong>Multi-timeframe</strong> &mdash; the same blocks resampled on 5m, 15m, 60m,
+        merged with strict <em class="serif">causal</em> alignment.</li>
+      <li><strong>Order flow (added in Phase 1)</strong> &mdash; cumulative volume delta
+        (CVD), CVD slope &amp; z-score, taker-flow imbalance, funding rate &amp;
+        change, perp-spot basis &amp; change.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="strat">
+    <h2>The strategy</h2>
+    <p>
+      The model is the easy part. Translating its probabilities into trades correctly
+      is what saved v2 from being v1 with extra steps.
+    </p>
+    <h3>1 &nbsp;·&nbsp; directional decision</h3>
+    <pre class="codeblock"><code>thr  = 0.748              # entry_threshold (BO-optimised)
+if   P_long  &gt;= thr and P_long  &gt; P_short: side = +1
+elif P_short &gt;= thr and P_short &gt; P_long:  side = -1
+else                                       side =  0</code></pre>
+
+    <h3>2 &nbsp;·&nbsp; regime gate</h3>
+    <p>
+      Volatility tercile (realised vol over the last 24&nbsp;hours on 60m bars)
+      &times; trend sign (close vs EMA-24 on 60m) defines six cells. The trade is
+      taken <em class="serif">only</em> if the current cell is in the
+      <span class="mono">favorable_cells</span> set found on the optimisation segment.
+    </p>
+    <pre class="codeblock"><code>favorable_cells = ['low_up', 'mid_down', 'mid_up']
+if cell not in favorable_cells: side = 0     # gate blocks</code></pre>
+
+    <h3>3 &nbsp;·&nbsp; confidence-scaled sizing</h3>
+    <pre class="codeblock"><code>p_chosen   = P_long if side == +1 else P_short
+size_frac  = clip( (p_chosen - thr) / (1 - thr), 0, 1 )
+notional   = equity &times; leverage &times; size_frac</code></pre>
+    <p class="note">
+      So a marginal signal (<span class="mono">p = 0.75</span>) sizes
+      &asymp; 0; a strong signal (<span class="mono">p = 0.90</span>) sizes
+      &asymp; 60% of full notional. We never bet the farm on a borderline call.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="exec">
+    <h2>Execution &amp; risk</h2>
+    <dl class="kv">
+      <div><dt>Entry</dt><dd>maker limit at the signal-bar close &mdash; fill
+        only if the next bar trades <em class="serif">through</em> the level by a
+        small queue buffer (0.5&nbsp;bps). Otherwise cancel, no trade.</dd></div>
+      <div><dt>Exit</dt><dd>taker market on SL / TP / liquidation / time-stop.</dd></div>
+      <div><dt>SL / TP</dt><dd><span class="mono">32.3 bps</span> /
+        <span class="mono">35.3 bps</span>, both BO-optimised.</dd></div>
+      <div><dt>Leverage</dt><dd>2&times; isolated; forced liquidation modelled
+        at <span class="mono">1 / lev &minus; maint</span>.</dd></div>
+      <div><dt>Time-stop</dt><dd>30 bars (= the label horizon).</dd></div>
+      <div><dt>Fees</dt><dd>maker 2&nbsp;bps, taker 4&nbsp;bps &mdash;
+        Binance USD-M public schedule.</dd></div>
+      <div><dt>Funding</dt><dd>accrued every 8h (00/08/16 UTC) on the open
+        notional, both signs.</dd></div>
+    </dl>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="val">
+    <h2>Statistical validation</h2>
+    <p>
+      We deliberately did not stop at a single in-sample backtest. The 4&nbsp;bps cost
+      barrier is thin enough that any apparent edge has to survive a battery of tests
+      before we trust it.
+    </p>
+    <table class="results">
+      <thead>
+        <tr><th>Test</th><th class="r">BTC</th><th class="r">ETH</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Single-window OOS return</td>
+          <td class="r mono up">+0.23%</td>
+          <td class="r mono dim">&minus;0.07%</td></tr>
+        <tr><td>Walk-forward, 5 windows &mdash; pooled OOS</td>
+          <td class="r mono up">+3.53%</td>
+          <td class="r mono dn">&minus;1.21%</td></tr>
+        <tr><td>Windows positive</td>
+          <td class="r mono">5 / 5</td>
+          <td class="r mono">1 / 5</td></tr>
+        <tr><td>Monte Carlo P(positive total)</td>
+          <td class="r mono up">99%</td>
+          <td class="r mono dn">12%</td></tr>
+        <tr><td>Permutation test p-value</td>
+          <td class="r mono up"><strong>0.014</strong></td>
+          <td class="r mono dn">0.889</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Methodology, in plain words:
+    </p>
+    <ul>
+      <li><strong>3-way split</strong> with embargo: train (60%), opt (20%), validation (20%).
+        Models fit on train; SL/TP/threshold and favorable cells chosen on opt; performance
+        measured on validation. <em class="serif">None</em> of those three pieces ever
+        see each other's data.</li>
+      <li><strong>Walk-forward</strong>: that same 3-way split, rolled over 5 anchored
+        windows, with regime cells re-selected per window. Every validation block is
+        strictly out-of-sample.</li>
+      <li><strong>Monte Carlo bootstrap</strong> on pooled OOS trade returns: 2000
+        resamples with replacement &rarr; distribution of terminal return, percentiles,
+        P(positive).</li>
+      <li><strong>Permutation test</strong>: random sign-flip on the same trade returns,
+        2000 draws. The p-value is the fraction of permuted means that match or beat
+        the actual. <span class="mono">p = 0.014</span> means there is a 1.4% chance of
+        seeing this edge by luck under the null.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="known">
+    <h2>Honest caveats</h2>
+    <p>This is the part most strategy pitches skip. We won't.</p>
+    <ul class="caveats">
+      <li>
+        <strong>One pair survived, not two.</strong> A universal edge would have moved
+        ETH too. BTC may be exploiting a structure that does not generalise.
+      </li>
+      <li>
+        <strong>One historical window.</strong> The walk-forward is rolling within a single
+        180-day period. The strategy has not seen 2020-style vol or 2022-style attrition.
+      </li>
+      <li>
+        <strong>Multiple-testing tax.</strong> We tried &sim;20+ configurations across the
+        program. <span class="mono">p = 0.014</span> on the winner is meaningfully
+        weaker once corrected. The Deflated Sharpe per-bar comes out near zero, which
+        we attribute to the strategy being sparse (the per-bar Sharpe denominator is
+        tiny). The per-trade permutation test stays the more relevant measure here.
+      </li>
+      <li>
+        <strong>Free order flow only.</strong> The strongest microstructure signal in
+        the literature is multi-level OFI from L2 depth (Kolm et&nbsp;al. 2023). That
+        needs paid history (Tardis / Kaiko). We chose to find out whether free flow
+        was already enough &mdash; it is, marginally, on BTC.
+      </li>
+      <li>
+        <strong>Fills are simulated.</strong> Our maker-limit orders do not actually
+        exist on the venue. Real fills depend on queue position; in practice some of
+        the "filled" trades here would have missed. This is what makes
+        <em class="serif">paper</em> paper.
+      </li>
+      <li>
+        <strong>Leverage 2&times; amplifies mistakes.</strong> One adverse SL costs
+        ~6.5&nbsp;bps of equity, not 3.2. The path to ruin is shorter than gross
+        numbers suggest.
+      </li>
+    </ul>
+    <p class="standout">
+      <span class="lbl">VERDICT</span>
+      Promising, not proven. Paper trading is the actual forward test; we will judge
+      after 30&ndash;60 days of out-of-time fills, not after 30 minutes.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="repro">
+    <h2>Reproducibility</h2>
+    <dl class="kv">
+      <div>
+        <dt>Codebase</dt>
+        <dd><span class="mono">github.com/gabrieledemarco/Live_paper_bot</span> &mdash;
+          everything serving this dashboard.</dd>
+      </div>
+      <div>
+        <dt>Offline pipeline</dt>
+        <dd>Sibling repo <span class="mono">Model_pipeline</span> with the
+          <span class="mono">src/</span> training stack, walk-forward scripts and
+          validation reports.</dd>
+      </div>
+      <div>
+        <dt>Frozen bundle</dt>
+        <dd><span class="mono">live/artifacts/btc_bundle/</span> &mdash; two joblib
+          models + <span class="mono">params.json</span> + content hash
+          (<span id="bundle-h" class="mono">…</span>) you can also see in the
+          dashboard footer.</dd>
+      </div>
+      <div>
+        <dt>Frozen parameters</dt>
+        <dd class="mono small">
+          entry_threshold = 0.7484 &nbsp;·&nbsp;
+          sl_bps = 32.3 &nbsp;·&nbsp;
+          tp_bps = 35.3 &nbsp;·&nbsp;
+          leverage = 2&times; &nbsp;·&nbsp;
+          label_horizon = 30 bars &nbsp;·&nbsp;
+          favorable_cells = ['low_up', 'mid_down', 'mid_up'] &nbsp;·&nbsp;
+          vol_terciles_low_hi = [0.00336, 0.00476]
+        </dd>
+      </div>
+    </dl>
+    <p class="footnote">
+      To rebuild from scratch: clone <span class="mono">Model_pipeline</span>, run
+      <span class="mono">python main.py htf-download</span>,
+      <span class="mono">python scripts/strategy_v2_1.py</span>,
+      <span class="mono">python scripts/walk_forward_mc.py --orderflow</span>,
+      <span class="mono">python scripts/build_report.py</span>, then
+      <span class="mono">python -m live.freeze_strategy</span>. The bundle hash should
+      match what the dashboard displays.
+    </p>
+  </section>
+
+  <footer class="paper-foot">
+    <span class="lbl">DISCLAIMER</span>
+    <span class="dim">
+      Paper trading. Fills simulated. No real capital at risk. Nothing on this page
+      constitutes investment advice.
+    </span>
+  </footer>
+</article>
+
+<script>
+  // Fetch bundle hash from /health for the reproducibility row.
+  fetch('/health').then(r => r.json()).then(h => {
+    const el = document.getElementById('bundle-h');
+    if (el && h.current_run_id) {
+      fetch('/runs').then(r => r.json()).then(rs => {
+        if (rs && rs.length) el.textContent = rs[0].bundle_hash || '—';
+      });
+    }
+  }).catch(() => {});
+</script>
+</body>
+</html>
