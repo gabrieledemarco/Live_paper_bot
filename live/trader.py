@@ -63,6 +63,14 @@ class LiveTrader:
         self._running = True
         self._heartbeat_interval = 60
         self._last_heartbeat_ts: Optional[datetime] = None
+        # Singleton ccxt client (reuses the rate limiter across calls) and a
+        # cooldown timestamp honored on Binance HTTP 418/429 bans.
+        import ccxt as _ccxt
+        self._exchange = _ccxt.binanceusdm({
+            "enableRateLimit": True,
+            "timeout": 30000,
+        })
+        self._cooldown_until: float = 0.0
 
         logger.info(
             "LiveTrader initialized; run_id=%s bundle_hash=%s",
@@ -89,12 +97,11 @@ class LiveTrader:
 
         Uses ccxt with no API keys (public endpoint only).
         """
+        if time.time() < self._cooldown_until:
+            return None
         try:
-            import ccxt
-
-            exchange = ccxt.binanceusdm({"enableRateLimit": True})
-            since = exchange.milliseconds() - 180 * 60 * 1000
-            ohlcv = exchange.fetch_ohlcv(
+            since = self._exchange.milliseconds() - 180 * 60 * 1000
+            ohlcv = self._exchange.fetch_ohlcv(
                 self.pair, timeframe="1m", since=since, limit=180
             )
             if not ohlcv:
@@ -106,20 +113,45 @@ class LiveTrader:
             df = df.set_index("timestamp")
             return df
         except Exception as exc:
+            self._handle_rate_limit(exc)
             logger.error("fetch_ohlcv failed: %s", exc)
             return None
 
+    @staticmethod
+    def _parse_ban_until(msg: str) -> Optional[float]:
+        """Extract the 'banned until <epoch_ms>' timestamp from a Binance error."""
+        import re
+        m = re.search(r"banned until (\d+)", str(msg))
+        if not m:
+            return None
+        try:
+            return int(m.group(1)) / 1000.0  # ms -> s
+        except ValueError:
+            return None
+
+    def _handle_rate_limit(self, exc: Exception) -> None:
+        """Detect 418/429 bans and arm the cooldown so the loop sleeps quietly."""
+        s = str(exc)
+        if "418" in s or "429" in s or "-1003" in s or "Too many" in s:
+            until = self._parse_ban_until(s)
+            now = time.time()
+            # Buffer 30s past the ban; floor at 5 minutes if the message lacks one.
+            target = (until + 30.0) if until is not None else (now + 300.0)
+            self._cooldown_until = max(self._cooldown_until, target)
+            wait = max(0.0, target - now)
+            logger.warning("Rate-limit ban; cooldown for %.0fs (until ts=%.0f)", wait, target)
+
     def fetch_funding_rate(self) -> Optional[float]:
         """Fetch the most recent funding rate from Binance public API."""
+        if time.time() < self._cooldown_until:
+            return None
         try:
-            import ccxt
-
-            exchange = ccxt.binanceusdm({"enableRateLimit": True})
-            fundings = exchange.fetch_funding_rate(self.pair)
+            fundings = self._exchange.fetch_funding_rate(self.pair)
             if fundings and "fundingRate" in fundings:
                 return float(fundings["fundingRate"])
             return None
         except Exception as exc:
+            self._handle_rate_limit(exc)
             logger.debug("fetch_funding_rate failed: %s", exc)
             return None
 
@@ -128,12 +160,11 @@ class LiveTrader:
 
         Uses the bundle's pre-computed vol tercile thresholds.
         """
+        if time.time() < self._cooldown_until:
+            return "unknown"
         try:
-            import ccxt
-
-            exchange = ccxt.binanceusdm({"enableRateLimit": True})
-            since = exchange.milliseconds() - 72 * 60 * 60 * 1000
-            ohlcv_60m = exchange.fetch_ohlcv(
+            since = self._exchange.milliseconds() - 72 * 60 * 60 * 1000
+            ohlcv_60m = self._exchange.fetch_ohlcv(
                 self.pair, timeframe="1h", since=since, limit=72
             )
             if not ohlcv_60m:
@@ -164,6 +195,7 @@ class LiveTrader:
             trend = "up" if df["close"].iloc[-1] >= ema.iloc[-1] else "down"
             return f"{vol}_{trend}"
         except Exception as exc:
+            self._handle_rate_limit(exc)
             logger.debug("regime_cell failed: %s", exc)
             return "unknown"
 
@@ -357,6 +389,17 @@ class LiveTrader:
 
         while self._running:
             try:
+                # If we are in an exchange cooldown, wait it out (still write
+                # heartbeats so the dashboard knows we are alive).
+                now = time.time()
+                if now < self._cooldown_until:
+                    if now - last_heartbeat >= self._heartbeat_interval:
+                        self.heartbeat()
+                        last_heartbeat = now
+                    sleep_s = min(60.0, self._cooldown_until - now)
+                    time.sleep(sleep_s)
+                    continue
+
                 processed = self.run_once()
                 if processed:
                     logger.debug(
@@ -365,18 +408,22 @@ class LiveTrader:
                         self.fillsim.pos.side,
                     )
 
-                # Heartbeat every 60s
                 if time.time() - last_heartbeat >= self._heartbeat_interval:
                     self.heartbeat()
                     last_heartbeat = time.time()
 
-                time.sleep(2)
+                # Sleep until ~5s after the next 1m bar close (avoid hot-looping
+                # on Binance and respect ccxt's rate limiter).
+                now_ms = int(time.time() * 1000)
+                next_close = ((now_ms // 60_000) + 1) * 60_000
+                sleep_s = max(2.0, (next_close - now_ms) / 1000.0 + 5.0)
+                time.sleep(sleep_s)
             except KeyboardInterrupt:
                 logger.info("Shutdown requested")
                 break
             except Exception as exc:
                 logger.error("Loop error: %s", exc, exc_info=True)
-                time.sleep(10)
+                time.sleep(30)
 
         self.shutdown()
 
