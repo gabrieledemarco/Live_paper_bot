@@ -117,6 +117,9 @@ def walk_forward(cfg: PipelineConfig, pair: str, use_orderflow: bool = False) ->
     pooled_trades: List[pd.DataFrame] = []
     val_returns: List[pd.Series] = []
     bh_returns: List[pd.Series] = []
+    val_signals: List[pd.Series] = []
+    val_proba: List[pd.Series] = []
+    val_cells: List[pd.Series] = []
 
     for i in range(N_WINDOWS):
         opt_a = base + i * block
@@ -167,13 +170,17 @@ def walk_forward(cfg: PipelineConfig, pair: str, use_orderflow: bool = False) ->
 
         # gated validation
         pl_v = proba(m_long, val_a, val_b); ps_v = proba(m_short, val_a, val_b)
-        vsig, _, vsize = _build_signal(pl_v, ps_v, thr, s.size_by_confidence)
+        vsig, vpchosen, vsize = _build_signal(pl_v, ps_v, thr, s.size_by_confidence)
         vidx = X_df.index[val_a:val_b]
         vcells = _cells_for(cell_60m, vidx)
         keep = vcells.isin(favorable).to_numpy()
+        gated_sig = (vsig * keep).astype("int8")
+        val_signals.append(pd.Series(gated_sig, index=vidx))
+        val_proba.append(pd.Series(vpchosen, index=vidx))
+        val_cells.append(pd.Series(vcells.to_numpy(), index=vidx))
         vbars = bars.loc[vidx]
         res = HTFBacktester(_params(cfg, sl, tp)).run(
-            vbars, pd.Series((vsig * keep).astype("int8"), index=vidx),
+            vbars, pd.Series(gated_sig, index=vidx),
             pd.Series(1.0, index=vidx), size=pd.Series(vsize * keep, index=vidx))
         k = backtest_kpis(res, _PPY)
         win_rows.append({"window": i + 1, "n_trades": k["n_trades"],
@@ -190,7 +197,11 @@ def walk_forward(cfg: PipelineConfig, pair: str, use_orderflow: bool = False) ->
     pooled = pd.concat(pooled_trades, ignore_index=True) if pooled_trades else pd.DataFrame()
     oos_ret = pd.concat(val_returns) if val_returns else pd.Series(dtype=float)
     bh_ret = pd.concat(bh_returns) if bh_returns else pd.Series(dtype=float)
-    return {"windows": win_rows, "pooled": pooled, "oos_ret": oos_ret, "bh_ret": bh_ret}
+    signals = pd.concat(val_signals) if val_signals else pd.Series(dtype="int8")
+    proba_s = pd.concat(val_proba) if val_proba else pd.Series(dtype=float)
+    cells_s = pd.concat(val_cells) if val_cells else pd.Series(dtype=object)
+    return {"windows": win_rows, "pooled": pooled, "oos_ret": oos_ret, "bh_ret": bh_ret,
+            "signals": signals, "proba": proba_s, "cells": cells_s}
 
 
 def monte_carlo(pooled: pd.DataFrame) -> Dict:
