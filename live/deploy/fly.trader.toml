@@ -1,0 +1,16 @@
+app = "live-trader"
+
+[build]
+  dockerfile = "live/Dockerfile.trader"
+
+[env]
+  DATABASE_URL = ""
+
+[[services]]
+  internal_port = 0
+  protocol = "tcp"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

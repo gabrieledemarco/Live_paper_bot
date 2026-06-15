@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: live_trader
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d live_trader"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  trader:
+    build:
+      context: ..
+      dockerfile: live/Dockerfile.trader
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://trader:trader_pass@postgres:5432/live_trader
+    volumes:
+      - ../artifacts:/app/artifacts
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: live/Dockerfile.api
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://trader:trader_pass@postgres:5432/live_trader
+    restart: unless-stopped
+
+volumes:
+  pgdata:

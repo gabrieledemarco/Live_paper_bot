@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paper Trading Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+<header>
+  <h1>Paper Trading Dashboard</h1>
+  <div class="disclaimer">PAPER — not real money; fills are simulated</div>
+</header>
+
+<section id="kpi-cards" class="kpi-grid">
+  <div class="kpi"><span class="kpi-label">Equity</span><span id="kpi-equity" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Return</span><span id="kpi-return" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Sharpe</span><span id="kpi-sharpe" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Max DD</span><span id="kpi-maxdd" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Win Rate</span><span id="kpi-winrate" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Profit Factor</span><span id="kpi-pf" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">VaR95</span><span id="kpi-var95" class="kpi-value">—</span></div>
+  <div class="kpi"><span class="kpi-label">Days Up</span><span id="kpi-days" class="kpi-value">—</span></div>
+</section>
+
+<section class="chart-container">
+  <h2>Equity Curve & Drawdown</h2>
+  <canvas id="equityChart" height="300"></canvas>
+</section>
+
+<section id="open-position" class="position-card">
+  <h2>Open Position</h2>
+  <div id="position-content">Flat</div>
+</section>
+
+<div class="grid-2col">
+  <section>
+    <h2>Recent Trades</h2>
+    <div class="table-wrap">
+      <table id="trades-table">
+        <thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Reason</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Recent Signals</h2>
+    <div class="table-wrap">
+      <table id="signals-table">
+        <thead><tr><th>Time</th><th>P(Long)</th><th>P(Short)</th><th>Regime</th><th>Gate</th><th>Sig</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<footer id="footer">
+  <span id="footer-bundle">Bundle: —</span>
+  <span id="footer-started">Started: —</span>
+  <span id="footer-heartbeat">Heartbeat: —</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+app = "live-api"
+
+[build]
+  dockerfile = "live/Dockerfile.api"
+
+[env]
+  DATABASE_URL = ""
+
+[[services]]
+  internal_port = 8000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls"]
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

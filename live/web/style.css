@@ -1,0 +1,37 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 1rem; }
+header { text-align: center; margin-bottom: 1.5rem; }
+h1 { font-size: 1.6rem; color: #58a6ff; }
+.disclaimer { background: #da3633; color: #fff; font-weight: 700; font-size: 0.85rem; padding: 0.3rem 0.8rem; border-radius: 4px; display: inline-block; margin-top: 0.4rem; }
+h2 { font-size: 1.1rem; margin-bottom: 0.6rem; color: #8b949e; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.6rem; margin-bottom: 1.5rem; }
+.kpi { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 0.6rem; text-align: center; }
+.kpi-label { display: block; font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; }
+.kpi-value { display: block; font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; }
+.kpi-value.positive { color: #3fb950; }
+.kpi-value.negative { color: #f85149; }
+
+.chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+.chart-container canvas { max-height: 300px; width: 100%; }
+
+.position-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+.position-card .flat { color: #8b949e; font-style: italic; }
+.position-card .long { color: #3fb950; }
+.position-card .short { color: #f85149; }
+
+.grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+@media (max-width: 700px) { .grid-2col { grid-template-columns: 1fr; } }
+.grid-2col section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid #21262d; white-space: nowrap; }
+th { color: #8b949e; font-weight: 600; }
+tr:hover td { background: #1c2128; }
+td.side-long { color: #3fb950; }
+td.side-short { color: #f85149; }
+td.pnl-pos { color: #3fb950; }
+td.pnl-neg { color: #f85149; }
+
+footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8rem; color: #484f58; padding-top: 0.5rem; border-top: 1px solid #21262d; }
