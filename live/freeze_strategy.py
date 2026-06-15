@@ -21,7 +21,7 @@ from src.models.htf_strategy_v2 import _build_signal, triple_barrier_win
 
 logger = logging.getLogger(__name__)
 
-BUNDLE_DIR = Path("artifacts/btc_bundle")
+BUNDLE_DIR = Path("live/artifacts/btc_bundle")
 
 
 def _lgbm() -> LGBMClassifier:

@@ -43,11 +43,18 @@ class LiveFeatureBuilder:
             columns=["open", "high", "low", "close", "volume"]
         )
 
+    def _append(self, df: pd.DataFrame) -> None:
+        # Skip the concat when the buffer is empty to avoid the pandas 2.2+
+        # FutureWarning about empty/all-NA frames; preserve column order.
+        if self._bars.empty:
+            self._bars = df.reset_index(drop=True)
+        else:
+            self._bars = pd.concat([self._bars, df], ignore_index=True)
+
     def update(self, bar: Dict[str, float]) -> Optional[pd.Series]:
         """Append one bar and return the feature vector for the latest bar,
         or None if the window is too short."""
-        new_row = pd.DataFrame([bar])
-        self._bars = pd.concat([self._bars, new_row], ignore_index=True)
+        self._append(pd.DataFrame([bar]))
         if len(self._bars) < max(self.vol_window, self.vwap_window, 3):
             return None
         return self._compute_latest()
@@ -55,7 +62,7 @@ class LiveFeatureBuilder:
     def update_bulk(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         """Append a DataFrame of bars and return feature vectors for all rows,
         or None if insufficient history."""
-        self._bars = pd.concat([self._bars, df], ignore_index=True)
+        self._append(df)
         if len(self._bars) < max(self.vol_window, self.vwap_window, 3):
             return None
         return self._compute_all()

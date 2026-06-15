@@ -28,7 +28,7 @@ class LiveTrader:
     def __init__(
         self,
         database_url: str,
-        bundle_dir: Path = Path("artifacts/btc_bundle"),
+        bundle_dir: Path = Path("live/artifacts/btc_bundle"),
         initial_capital: float = 10000.0,
         pair: str = _PAIR,
     ) -> None:
@@ -397,7 +397,7 @@ def main() -> None:
     parser.add_argument(
         "--db", default="postgresql://localhost:5432/live_trader", help="DATABASE_URL"
     )
-    parser.add_argument("--bundle", default="artifacts/btc_bundle", type=Path)
+    parser.add_argument("--bundle", default="live/artifacts/btc_bundle", type=Path)
     parser.add_argument("--capital", default=10000.0, type=float)
     parser.add_argument("--pair", default=_PAIR)
     args = parser.parse_args()
