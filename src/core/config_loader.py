@@ -116,6 +116,19 @@ class HtfBacktestCfg:
 
 
 @dataclass
+class HtfStrategyV2Cfg:
+    label_horizon: int
+    ref_sl_bps: float
+    ref_tp_bps: float
+    entry_mode: str
+    leverage: float
+    thr_min: float
+    thr_max: float
+    opt_n_trials: int
+    size_by_confidence: bool
+
+
+@dataclass
 class PipelineConfig:
     data: DataCfg
     model: ModelCfg
@@ -126,6 +139,7 @@ class PipelineConfig:
     htf_features: Optional[HtfFeatureCfg] = None
     htf_model: Optional[HtfModelCfg] = None
     htf_backtest: Optional[HtfBacktestCfg] = None
+    htf_strategy_v2: Optional[HtfStrategyV2Cfg] = None
 
     @classmethod
     def load(cls, path: str | Path = "config.ini") -> "PipelineConfig":
@@ -245,6 +259,21 @@ class PipelineConfig:
                 meta_thr=cfg.getfloat("HTF_BACKTEST", "meta_thr", fallback=0.55),
             )
 
+        # ---- Optional HTF strategy v2 ------------------------------------- #
+        htf_strategy_v2 = None
+        if cfg.has_section("HTF_STRATEGY_V2"):
+            htf_strategy_v2 = HtfStrategyV2Cfg(
+                label_horizon=cfg.getint("HTF_STRATEGY_V2", "label_horizon", fallback=30),
+                ref_sl_bps=cfg.getfloat("HTF_STRATEGY_V2", "ref_sl_bps", fallback=15.0),
+                ref_tp_bps=cfg.getfloat("HTF_STRATEGY_V2", "ref_tp_bps", fallback=30.0),
+                entry_mode=cfg.get("HTF_STRATEGY_V2", "entry_mode", fallback="maker").lower(),
+                leverage=cfg.getfloat("HTF_STRATEGY_V2", "leverage", fallback=2.0),
+                thr_min=cfg.getfloat("HTF_STRATEGY_V2", "thr_min", fallback=0.50),
+                thr_max=cfg.getfloat("HTF_STRATEGY_V2", "thr_max", fallback=0.75),
+                opt_n_trials=cfg.getint("HTF_STRATEGY_V2", "opt_n_trials", fallback=60),
+                size_by_confidence=cfg.getboolean("HTF_STRATEGY_V2", "size_by_confidence", fallback=True),
+            )
+
         return cls(data=data, model=model, backtest=backtest, report=report, raw=cfg,
                    htf_data=htf_data, htf_features=htf_features, htf_model=htf_model,
-                   htf_backtest=htf_backtest)
+                   htf_backtest=htf_backtest, htf_strategy_v2=htf_strategy_v2)
