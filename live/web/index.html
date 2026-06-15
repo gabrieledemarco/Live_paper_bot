@@ -59,6 +59,20 @@
   </div>
 </section>
 
+<section class="card chart">
+  <header>
+    <span class="title">Live chart &nbsp;·&nbsp; BTC/USDT perp &nbsp;·&nbsp; 1m</span>
+    <span class="sub mono" id="chart-meta">warming up…</span>
+  </header>
+  <canvas id="chart" aria-label="BTC live candlestick chart with trade overlays"></canvas>
+  <footer class="chart-foot">
+    <span><span class="swatch up"></span> long entry &nbsp;/&nbsp; bull candle</span>
+    <span><span class="swatch dn"></span> short entry &nbsp;/&nbsp; bear candle</span>
+    <span><span class="swatch line"></span> live SL/TP &nbsp;·&nbsp; dashed</span>
+    <span class="dim">data: binance fstream + REST warm-up</span>
+  </footer>
+</section>
+
 <section class="kpis" id="kpis"></section>
 
 <section class="grid-2">

@@ -8,6 +8,8 @@
 const API = (location.origin || '').replace(/\/$/, '');
 const POLL_MS = 5000;
 const BIN_WS = 'wss://fstream.binance.com/ws/btcusdt@kline_1m';
+const BIN_REST_KLINES = 'https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=240';
+const CHART_MAX = 240;       // last 4h of 1m candles
 
 const C = {
   up:   getComputedStyle(document.documentElement).getPropertyValue('--up').trim()   || '#00d97c',
@@ -54,6 +56,10 @@ let prevClose = null;       // for delta display
 let lastHealth = null;
 const sparkBars = [];       // {open, high, low, close, openTime}
 const SPARK_MAX = 120;
+const chartBars = [];       // bigger ring buffer for the candlestick chart
+let chartTrades = [];       // overlay: closed trades (markers)
+let chartPosition = null;   // overlay: open position (live lines)
+let chartHover = null;      // {x, y} pixel coords of current mouse hover
 
 /* ============================================================
    BINANCE WEBSOCKET — public market data, no API key needed
@@ -116,8 +122,39 @@ function onTick(bar) {
       prevClose = last ? last.close : prevClose;
     }
   }
+  // upsert bar in chartBars (independent buffer)
+  const lastC = chartBars[chartBars.length - 1];
+  if (lastC && lastC.openTime === bar.openTime) {
+    Object.assign(lastC, bar);
+  } else {
+    chartBars.push({ ...bar });
+    if (chartBars.length > CHART_MAX) chartBars.shift();
+  }
   renderPrice(bar);
   drawSpark();
+  drawChart();
+}
+
+async function warmUpChart() {
+  // Pull the last 240 closed 1m candles so the chart has context the moment
+  // the user opens the page, before the WS produces enough live data on its own.
+  try {
+    const r = await fetch(BIN_REST_KLINES);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!Array.isArray(data)) return;
+    chartBars.length = 0;
+    for (const k of data) {
+      chartBars.push({
+        openTime: +k[0],
+        open: +k[1], high: +k[2], low: +k[3], close: +k[4],
+        volume: +k[5], closed: true,
+      });
+    }
+    drawChart();
+  } catch (e) {
+    /* offline / blocked CORS — we'll still get data from WS */
+  }
 }
 
 function setSpark(msg) {
@@ -224,6 +261,266 @@ function hexA(hex, a) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
+/* ============================================================
+   CANDLESTICK CHART (TradingView-style)
+   Pure canvas, draws 240 most-recent 1m candles, with overlays for
+   closed-trade markers and the live position (entry / SL / TP lines).
+   Continues to render even when there are no trades yet.
+   ============================================================ */
+const CHART_PAD = { l: 6, r: 64, t: 16, b: 28 };
+
+function drawChart() {
+  const c = document.getElementById('chart');
+  if (!c) return;
+  const ctx = fitCanvas(c);
+  const W = c.clientWidth, H = c.clientHeight;
+  ctx.clearRect(0, 0, W, H);
+
+  if (chartBars.length < 2) {
+    ctx.fillStyle = C.dim;
+    ctx.font = "italic 13px 'Instrument Serif', serif";
+    ctx.textAlign = 'center';
+    ctx.fillText('warming up live candles…', W / 2, H / 2);
+    return;
+  }
+
+  const plotL = CHART_PAD.l;
+  const plotR = W - CHART_PAD.r;
+  const plotT = CHART_PAD.t;
+  const plotB = H - CHART_PAD.b;
+  const plotW = plotR - plotL;
+  const plotH = plotB - plotT;
+
+  // ---- Y range (visible bars only) ----
+  let lo = +Infinity, hi = -Infinity;
+  for (const b of chartBars) {
+    if (b.low  < lo) lo = b.low;
+    if (b.high > hi) hi = b.high;
+  }
+  // include overlay levels in the range so the chart never crops them
+  if (chartPosition && chartPosition.side) {
+    for (const lvl of [chartPosition.entry_price, chartPosition.sl, chartPosition.tp]) {
+      if (lvl == null || lvl <= 0) continue;
+      if (lvl < lo) lo = lvl;
+      if (lvl > hi) hi = lvl;
+    }
+  }
+  const yPad = (hi - lo) * 0.08 || 1;
+  lo -= yPad; hi += yPad;
+
+  const xOf = (i) => plotL + (i + 0.5) * (plotW / chartBars.length);
+  const yOf = (p) => plotT + (1 - (p - lo) / (hi - lo)) * plotH;
+  const bw  = Math.max(1, (plotW / chartBars.length) * 0.62);
+
+  // ---- background grid (Y) ----
+  ctx.strokeStyle = C.hair; ctx.lineWidth = 0.5;
+  ctx.fillStyle = C.dim;
+  ctx.font = "10px 'JetBrains Mono', monospace";
+  const ny = 5;
+  for (let i = 0; i <= ny; i++) {
+    const v = lo + (hi - lo) * (i / ny);
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(plotL, y); ctx.lineTo(plotR, y); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillText(formatPxAxis(v), plotR + 6, y + 3);
+  }
+
+  // ---- background grid (X) ----
+  const xStep = Math.max(1, Math.floor(chartBars.length / 6));
+  ctx.textAlign = 'center';
+  for (let i = xStep; i < chartBars.length; i += xStep) {
+    const x = xOf(i);
+    ctx.strokeStyle = C.hair;
+    ctx.beginPath(); ctx.moveTo(x, plotT); ctx.lineTo(x, plotB); ctx.stroke();
+    ctx.fillStyle = C.dim;
+    ctx.fillText(fmtBarTime(chartBars[i].openTime), x, plotB + 16);
+  }
+
+  // ---- candles ----
+  for (let i = 0; i < chartBars.length; i++) {
+    const b = chartBars[i];
+    const x = xOf(i);
+    const up = b.close >= b.open;
+    const color = up ? C.up : C.dn;
+
+    // wick
+    ctx.strokeStyle = color; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(x) + 0.5, yOf(b.high));
+    ctx.lineTo(Math.round(x) + 0.5, yOf(b.low));
+    ctx.stroke();
+
+    // body
+    const yO = yOf(b.open), yC = yOf(b.close);
+    const y = Math.min(yO, yC);
+    const h = Math.max(1, Math.abs(yC - yO));
+    ctx.fillStyle = color;
+    ctx.globalAlpha = up ? 0.85 : 1.0;
+    ctx.fillRect(Math.round(x - bw/2), y, Math.round(bw), Math.round(h));
+    ctx.globalAlpha = 1.0;
+  }
+
+  // ---- closed trade markers ----
+  if (chartTrades && chartTrades.length) {
+    for (const t of chartTrades) {
+      drawTradeMarker(ctx, t, xOf, yOf, plotL, plotR, plotT, plotB);
+    }
+  }
+
+  // ---- open position overlay (entry / SL / TP, with band) ----
+  if (chartPosition && chartPosition.side) {
+    drawPositionOverlay(ctx, chartPosition, xOf, yOf, plotL, plotR);
+  }
+
+  // ---- last close badge on the right axis ----
+  const last = chartBars[chartBars.length - 1];
+  const lastY = yOf(last.close);
+  const lastUp = last.close >= last.open;
+  const badge = formatPxAxis(last.close);
+  ctx.fillStyle = lastUp ? C.up : C.dn;
+  ctx.fillRect(plotR + 1, lastY - 9, 60, 18);
+  ctx.fillStyle = '#0a0a0b';
+  ctx.font = "700 11px 'JetBrains Mono', monospace";
+  ctx.textAlign = 'center';
+  ctx.fillText(badge, plotR + 31, lastY + 4);
+
+  // ---- crosshair on hover ----
+  if (chartHover && chartHover.x >= plotL && chartHover.x <= plotR &&
+                    chartHover.y >= plotT && chartHover.y <= plotB) {
+    const idx = Math.min(chartBars.length - 1, Math.max(0,
+      Math.round((chartHover.x - plotL) / plotW * chartBars.length - 0.5)));
+    const cx = xOf(idx);
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = C.hairS; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(cx, plotT); ctx.lineTo(cx, plotB); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(plotL, chartHover.y); ctx.lineTo(plotR, chartHover.y); ctx.stroke();
+    ctx.setLineDash([]);
+    const cur = chartBars[idx];
+    const tip = `${fmtBarTime(cur.openTime)}  O ${formatPxAxis(cur.open)}  H ${formatPxAxis(cur.high)}  L ${formatPxAxis(cur.low)}  C ${formatPxAxis(cur.close)}`;
+    ctx.fillStyle = 'rgba(10,10,11,0.85)';
+    ctx.fillRect(plotL + 4, plotT + 4, 320, 18);
+    ctx.fillStyle = C.tx;
+    ctx.font = "10.5px 'JetBrains Mono', monospace";
+    ctx.textAlign = 'left';
+    ctx.fillText(tip, plotL + 10, plotT + 17);
+  }
+
+  // chart meta line
+  const meta = $('#chart-meta');
+  if (meta) {
+    const s = chartBars[0], e = chartBars[chartBars.length - 1];
+    meta.textContent = `${chartBars.length} bars · ${fmtBarTime(s.openTime)} → ${fmtBarTime(e.openTime)} UTC`;
+  }
+}
+
+function drawTradeMarker(ctx, t, xOf, yOf, plotL, plotR, plotT, plotB) {
+  const idxIn = bisectBarIdx(t.entry_ts);
+  if (idxIn == null) return;
+  const xIn = xOf(idxIn);
+  const yIn = yOf(t.entry_price);
+  const isLong = t.side === 1;
+  const win = (t.pnl ?? 0) >= 0;
+  const dir = isLong ? 1 : -1;
+
+  // Entry triangle (always shown)
+  ctx.fillStyle = isLong ? C.up : C.dn;
+  triangle(ctx, xIn, yIn + dir * 10, 6, dir);
+
+  // Exit + connecting line if trade is closed
+  if (t.exit_ts && t.exit_price != null) {
+    const idxOut = bisectBarIdx(t.exit_ts);
+    if (idxOut != null) {
+      const xOut = xOf(idxOut), yOut = yOf(t.exit_price);
+      ctx.strokeStyle = win ? C.up : C.dn;
+      ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(xIn, yIn); ctx.lineTo(xOut, yOut); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+      // exit dot
+      ctx.fillStyle = win ? C.up : C.dn;
+      ctx.beginPath(); ctx.arc(xOut, yOut, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#0a0a0b'; ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+}
+
+function drawPositionOverlay(ctx, p, xOf, yOf, plotL, plotR) {
+  const idxIn = bisectBarIdx(p.ts || p.entry_ts);
+  const xIn = idxIn != null ? xOf(idxIn) : plotL;
+  // entry line (solid)
+  if (p.entry_price) {
+    horizLine(ctx, xIn, plotR, yOf(p.entry_price), C.tx, 1, [4, 3], 0.7,
+              `ENTRY ${formatPxAxis(p.entry_price)}`);
+  }
+  // SL (dn color)
+  if (p.sl) {
+    horizLine(ctx, xIn, plotR, yOf(p.sl), C.dn, 1, [3, 3], 0.8,
+              `SL ${formatPxAxis(p.sl)}`);
+  }
+  // TP (up color)
+  if (p.tp) {
+    horizLine(ctx, xIn, plotR, yOf(p.tp), C.up, 1, [3, 3], 0.8,
+              `TP ${formatPxAxis(p.tp)}`);
+  }
+  // side badge near entry
+  const sideText = p.side === 1 ? 'LONG' : 'SHORT';
+  const sideColor = p.side === 1 ? C.up : C.dn;
+  ctx.fillStyle = sideColor;
+  ctx.font = "700 10px 'JetBrains Mono', monospace";
+  ctx.textAlign = 'left';
+  ctx.fillText(sideText, xIn + 4, yOf(p.entry_price) - 5);
+}
+
+function horizLine(ctx, x0, x1, y, color, lw, dash, alpha, label) {
+  ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.globalAlpha = alpha;
+  ctx.setLineDash(dash || []);
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  if (label) {
+    ctx.fillStyle = color;
+    ctx.font = "10px 'JetBrains Mono', monospace";
+    ctx.textAlign = 'right';
+    ctx.fillText(label, x1 - 4, y - 3);
+  }
+}
+
+function triangle(ctx, x, y, s, dir) {
+  // dir: +1 below (long entry), -1 above (short entry)
+  ctx.beginPath();
+  if (dir > 0) {
+    ctx.moveTo(x, y - s); ctx.lineTo(x - s*0.85, y + s*0.55); ctx.lineTo(x + s*0.85, y + s*0.55);
+  } else {
+    ctx.moveTo(x, y + s); ctx.lineTo(x - s*0.85, y - s*0.55); ctx.lineTo(x + s*0.85, y - s*0.55);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function bisectBarIdx(iso) {
+  if (!iso || !chartBars.length) return null;
+  const t = (typeof iso === 'number') ? iso : Date.parse(iso);
+  if (!isFinite(t)) return null;
+  if (t < chartBars[0].openTime - 60000) return 0;
+  if (t > chartBars[chartBars.length - 1].openTime + 60000) return chartBars.length - 1;
+  // chartBars is monotonically increasing in openTime
+  let lo = 0, hi = chartBars.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (chartBars[mid].openTime <= t) lo = mid; else hi = mid;
+  }
+  return (t - chartBars[lo].openTime <= chartBars[hi].openTime - t) ? lo : hi;
+}
+
+function formatPxAxis(v) {
+  if (v == null) return '—';
+  return Number(v).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+}
+
+function fmtBarTime(ms) {
+  const d = new Date(ms);
+  const hh = String(d.getUTCHours()).padStart(2,'0');
+  const mm = String(d.getUTCMinutes()).padStart(2,'0');
+  return `${hh}:${mm}`;
+}
+
 let _equityCurve = null;
 function drawEquity(points) {
   const c = $('#eq'); if (!c) return;
@@ -293,7 +590,21 @@ function drawEquity(points) {
   ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI*2); ctx.fill();
 }
 
-window.addEventListener('resize', () => { drawSpark(); if (_equityCurve) drawEquity(_equityCurve); });
+window.addEventListener('resize', () => {
+  drawSpark();
+  drawChart();
+  if (_equityCurve) drawEquity(_equityCurve);
+});
+
+function bindChartHover() {
+  const c = document.getElementById('chart'); if (!c) return;
+  c.addEventListener('mousemove', (ev) => {
+    const r = c.getBoundingClientRect();
+    chartHover = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    drawChart();
+  });
+  c.addEventListener('mouseleave', () => { chartHover = null; drawChart(); });
+}
 
 /* ============================================================
    KPI strip
@@ -490,6 +801,12 @@ async function refreshAll() {
   renderTrades(trades);
   renderSignals(signals);
   renderFills(fills);
+
+  // Update chart overlays (closed trades + open position).
+  chartTrades   = Array.isArray(trades) ? trades : [];
+  chartPosition = (position && position.side) ? position : null;
+  drawChart();
+
   $('#eq-meta').textContent = equity && equity.length
     ? `${equity.length} snapshots · last ${fmtAgo(equity[equity.length-1].ts)}`
     : '—';
@@ -499,6 +816,9 @@ async function refreshAll() {
 function boot() {
   renderKpis(null);              // skeleton tiles
   drawEquity(null);              // empty placeholder
+  drawChart();                   // placeholder until warm-up arrives
+  bindChartHover();
+  warmUpChart();                 // REST snapshot of last 240 candles
   refreshAll();
   setInterval(refreshAll, POLL_MS);
   connectBinance();
