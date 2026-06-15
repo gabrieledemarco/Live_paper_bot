@@ -13,11 +13,9 @@ from lightgbm import LGBMClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.backtest.htf_engine import HTFBacktester
-from src.core.config_loader import PipelineConfig
-from src.core.orderflow_features import assemble_orderflow
-from src.models.htf_backtest_runner import HTFBacktestRunner
-from src.models.htf_strategy_v2 import _build_signal, triple_barrier_win
+# Note: imports from `src.*` (the offline training stack) are deferred inside
+# `freeze()` so that this module is importable in the live container, which
+# ships only the `live/` package without the offline training code.
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +46,16 @@ def freeze(
 
     Returns the params dict that was saved.
     """
+    # Offline-only imports: kept inside the function so the module loads in the
+    # live container, which does not include the `src/` training package.
+    from src.core.config_loader import PipelineConfig
+    from src.core.orderflow_features import assemble_orderflow  # noqa: F401
+    from src.models.htf_backtest_runner import HTFBacktestRunner
+    from src.models.htf_strategy_v2 import (  # noqa: F401
+        _build_signal,
+        triple_barrier_win,
+    )
+
     cfg = PipelineConfig.load(Path(cfg_path))
     runner = HTFBacktestRunner(cfg)
     X_df, bars_all, _ = runner._matrix(pair)
