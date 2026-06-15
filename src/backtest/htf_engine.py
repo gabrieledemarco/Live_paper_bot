@@ -24,6 +24,8 @@ class BacktestParams:
     maker_fee: float
     maintenance_margin: float
     signal_threshold: float
+    entry_mode: str = "taker"        # "taker" (next-bar open) | "maker" (limit at close)
+    time_stop_bars: int = 0          # 0 = disabled; else close after N bars
 
 
 @dataclass
@@ -46,13 +48,16 @@ class HTFBacktester:
     def __init__(self, params: BacktestParams) -> None:
         self.p = params
 
-    def run(self, bars: pd.DataFrame, signal: pd.Series, proba: pd.Series) -> Dict[str, Any]:
+    def run(self, bars: pd.DataFrame, signal: pd.Series, proba: pd.Series,
+            size: "pd.Series | None" = None) -> Dict[str, Any]:
         o = bars["open"].to_numpy(float)
         h = bars["high"].to_numpy(float)
         low = bars["low"].to_numpy(float)
         c = bars["close"].to_numpy(float)
         sig = signal.reindex(bars.index).fillna(0).to_numpy()
         prob = proba.reindex(bars.index).fillna(0.0).to_numpy()
+        size_arr = (size.reindex(bars.index).fillna(1.0).to_numpy()
+                    if size is not None else np.ones(len(bars)))
         idx = bars.index
         n = len(bars)
 
@@ -92,17 +97,35 @@ class HTFBacktester:
                         exit_price = pos.tp
                         reason = "TP"
 
+                if exit_price is None and self.p.time_stop_bars > 0 \
+                        and (t - pos.entry_idx) >= self.p.time_stop_bars:
+                    exit_price = c[t]
+                    reason = "TIME"
+
                 if exit_price is not None:
                     equity = self._close(trades, pos, idx, t, exit_price, reason, equity)
                     pos = _Pos()
 
-            # --- consider a new entry, executed at NEXT bar open (t+1) ---
+            # --- consider a new entry (taker: next open; maker: limit at close) ---
             if pos.side == 0 and sig[t] != 0 and prob[t] >= self.p.signal_threshold and t + 1 < n:
                 side = int(np.sign(sig[t]))
-                entry = o[t + 1]
-                notional = equity * self.p.leverage
+                size_frac = float(max(0.0, min(1.0, size_arr[t])))
+                if size_frac <= 0.0:
+                    equity_curve[t] = equity
+                    continue
+                if self.p.entry_mode == "maker":
+                    limit = c[t]  # post passively at the signal-bar close
+                    touched = (low[t + 1] <= limit) if side == 1 else (h[t + 1] >= limit)
+                    if not touched:
+                        equity_curve[t] = equity
+                        continue
+                    entry = limit
+                    fee = abs(equity * self.p.leverage * size_frac) * self.p.maker_fee
+                else:
+                    entry = o[t + 1]
+                    fee = abs(equity * self.p.leverage * size_frac) * self.p.taker_fee
+                notional = equity * self.p.leverage * size_frac
                 qty = side * notional / entry
-                fee = abs(notional) * self.p.taker_fee
                 if side == 1:
                     sl = entry * (1 - sl_f); tp = entry * (1 + tp_f); liq = entry * (1 - liq_f)
                 else:
