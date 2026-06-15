@@ -46,6 +46,26 @@ def ohlcv_path(output_dir: Path, pair: str, timeframe: str) -> Path:
     return Path(output_dir) / pair.upper() / timeframe / "part.parquet"
 
 
+def _parse_klines_taker(raw: list) -> pd.DataFrame:
+    """Parse raw Binance 12-column klines into taker-buy volume per bar.
+
+    Column order: openTime, o, h, l, c, volume, closeTime, quoteVol, trades,
+    takerBuyBase, takerBuyQuote, ignore.
+    """
+    if not raw:
+        return pd.DataFrame(columns=["taker_buy_base", "volume"])
+    arr = pd.DataFrame(raw, columns=[
+        "open_time", "o", "h", "l", "c", "volume", "close_time", "quote_vol",
+        "trades", "taker_buy_base", "taker_buy_quote", "ignore"])
+    ts = pd.to_datetime(arr["open_time"].astype("int64"), unit="ms", utc=True)
+    out = pd.DataFrame({
+        "taker_buy_base": pd.to_numeric(arr["taker_buy_base"], errors="coerce"),
+        "volume": pd.to_numeric(arr["volume"], errors="coerce"),
+    })
+    out.index = ts
+    return out
+
+
 class CCXTOHLCVDownloader:
     """Incremental OHLCV downloader backed by a Parquet store."""
 
@@ -199,3 +219,61 @@ class CCXTOHLCVDownloader:
 
     def load_all_timeframes(self, pair: str, timeframes: List[str]) -> Dict[str, pd.DataFrame]:
         return {tf: self.load(pair, tf) for tf in timeframes}
+
+    # ------------------------------------------------------------------ #
+    # Order-flow ingestion (Phase 1): taker-buy klines + funding
+    # ------------------------------------------------------------------ #
+    def fetch_klines_taker(self, pair: str, timeframe: str, lookback_days: int,
+                           out_dir: "str | Path") -> pd.DataFrame:
+        """Fetch raw klines (keeping taker-buy volume that fetch_ohlcv drops)."""
+        exchange = self._new_exchange()
+        ccxt_tf = _TF_ALIAS.get(timeframe, timeframe)
+        tf_ms = int(tf_to_timedelta(timeframe).total_seconds() * 1000)
+        now_ms = exchange.milliseconds()
+        since = now_ms - lookback_days * 86400_000
+        # Implicit raw klines endpoint (USD-M: fapiPublicGetKlines, spot: publicGetKlines).
+        getter = getattr(exchange, "fapiPublicGetKlines", None) or getattr(exchange, "publicGetKlines")
+        rows: List[list] = []
+        while since < now_ms:
+            r = getter({"symbol": pair.upper(), "interval": ccxt_tf,
+                        "startTime": since, "limit": self.page_limit})
+            if not r:
+                break
+            rows.extend(r)
+            since = int(r[-1][0]) + tf_ms
+            if len(r) < self.page_limit:
+                break
+        df = _parse_klines_taker(rows)
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        path = Path(out_dir) / pair.upper() / "klines_taker.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.reset_index(names="timestamp").to_parquet(path, index=False)
+        logger.info("[%s] klines taker-buy: %d bars -> %s", pair, len(df), path)
+        return df
+
+    def fetch_funding(self, pair: str, lookback_days: int, out_dir: "str | Path") -> pd.DataFrame:
+        """Fetch funding-rate history (perp) and cache to parquet."""
+        exchange = self._new_exchange()
+        symbol = self._resolve_symbol(exchange, pair)
+        now_ms = exchange.milliseconds()
+        since = now_ms - lookback_days * 86400_000
+        rows: List[dict] = []
+        while since < now_ms:
+            batch = exchange.fetch_funding_rate_history(symbol, since=since, limit=1000)
+            if not batch:
+                break
+            rows.extend(batch)
+            since = batch[-1]["timestamp"] + 1
+            if len(batch) < 1000:
+                break
+        if not rows:
+            return pd.DataFrame(columns=["funding_rate"])
+        df = pd.DataFrame({
+            "timestamp": pd.to_datetime([r["timestamp"] for r in rows], unit="ms", utc=True),
+            "funding_rate": [float(r["fundingRate"]) for r in rows],
+        }).drop_duplicates("timestamp").set_index("timestamp").sort_index()
+        path = Path(out_dir) / pair.upper() / "funding.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.reset_index().to_parquet(path, index=False)
+        logger.info("[%s] funding: %d points -> %s", pair, len(df), path)
+        return df
