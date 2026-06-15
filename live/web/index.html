@@ -1,64 +1,141 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Paper Trading Dashboard</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HTF · Live Paper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
-<header>
-  <h1>Paper Trading Dashboard</h1>
-  <div class="disclaimer">PAPER — not real money; fills are simulated</div>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">HTF&nbsp;·&nbsp;LIVE&nbsp;PAPER</span>
+    <span class="sub">order-flow gated strategy &nbsp;·&nbsp; BTCUSDT perp</span>
+  </div>
+  <nav class="topnav">
+    <span class="lbl">SYS</span>
+    <span class="led" id="led-sys"></span>
+    <span id="sys-text" class="mono">connecting</span>
+    <span class="sep">/</span>
+    <span class="lbl">DB</span>
+    <span class="led" id="led-db"></span>
+    <span class="sep">/</span>
+    <span class="lbl">RUN</span>
+    <span id="run-id" class="mono dim">…</span>
+    <span class="sep">/</span>
+    <span class="lbl">STALENESS</span>
+    <span id="stale" class="mono dim">—</span>
+  </nav>
 </header>
 
-<section id="kpi-cards" class="kpi-grid">
-  <div class="kpi"><span class="kpi-label">Equity</span><span id="kpi-equity" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Return</span><span id="kpi-return" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Sharpe</span><span id="kpi-sharpe" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Max DD</span><span id="kpi-maxdd" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Win Rate</span><span id="kpi-winrate" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Profit Factor</span><span id="kpi-pf" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">VaR95</span><span id="kpi-var95" class="kpi-value">—</span></div>
-  <div class="kpi"><span class="kpi-label">Days Up</span><span id="kpi-days" class="kpi-value">—</span></div>
+<section class="hero">
+  <div class="hero-left">
+    <div class="hero-label"><span class="serif">BTC&nbsp;</span>·&nbsp;USDT&nbsp;·&nbsp;perp</div>
+    <div class="hero-price">
+      <span id="px" class="px tabular">—</span>
+      <span id="px-delta" class="delta tabular">—</span>
+    </div>
+    <div class="hero-meta">
+      <span class="lbl">1m&nbsp;O</span><span id="px-open" class="mono">—</span>
+      <span class="lbl">H</span><span id="px-hi" class="mono">—</span>
+      <span class="lbl">L</span><span id="px-lo" class="mono">—</span>
+      <span class="lbl">V</span><span id="px-vol" class="mono">—</span>
+    </div>
+  </div>
+  <div class="hero-right">
+    <canvas id="spark" width="640" height="180" aria-label="BTC live sparkline"></canvas>
+    <div class="spark-foot">
+      <span class="lbl"><span class="led ok"></span>&nbsp;WS · binance fstream</span>
+      <span id="spark-since" class="dim mono">awaiting first kline…</span>
+    </div>
+  </div>
 </section>
 
-<section class="chart-container">
-  <h2>Equity Curve & Drawdown</h2>
-  <canvas id="equityChart" height="300"></canvas>
+<section class="kpis" id="kpis"></section>
+
+<section class="grid-2">
+  <article class="card eq">
+    <header><span class="title">Equity curve</span><span class="sub mono" id="eq-meta">—</span></header>
+    <canvas id="eq" width="900" height="280" aria-label="Equity curve"></canvas>
+  </article>
+  <article class="card pos">
+    <header><span class="title">Position</span><span class="sub" id="pos-side">FLAT</span></header>
+    <dl class="dl">
+      <div><dt>SIDE</dt><dd id="pos-side2" class="mono">—</dd></div>
+      <div><dt>QTY</dt><dd id="pos-qty" class="mono tabular">—</dd></div>
+      <div><dt>ENTRY</dt><dd id="pos-entry" class="mono tabular">—</dd></div>
+      <div><dt>SL</dt><dd id="pos-sl" class="mono tabular">—</dd></div>
+      <div><dt>TP</dt><dd id="pos-tp" class="mono tabular">—</dd></div>
+      <div><dt>LIQ</dt><dd id="pos-liq" class="mono tabular">—</dd></div>
+    </dl>
+    <footer>
+      <span class="lbl">unrealized pnl</span>
+      <span id="pos-upnl" class="mono tabular">—</span>
+    </footer>
+  </article>
 </section>
 
-<section id="open-position" class="position-card">
-  <h2>Open Position</h2>
-  <div id="position-content">Flat</div>
+<section class="card tbl">
+  <header><span class="title">Recent trades</span><span class="sub mono" id="tr-meta">—</span></header>
+  <div class="tblwrap">
+    <table id="trades">
+      <thead><tr>
+        <th>ENTRY</th><th>EXIT</th><th>SIDE</th>
+        <th class="r">ENTRY PX</th><th class="r">EXIT PX</th>
+        <th class="r">RET BPS</th><th class="r">PNL</th>
+        <th>REASON</th>
+      </tr></thead>
+      <tbody><tr><td colspan="8" class="empty">no trades yet — the gated strategy is selective by design</td></tr></tbody>
+    </table>
+  </div>
 </section>
 
-<div class="grid-2col">
-  <section>
-    <h2>Recent Trades</h2>
-    <div class="table-wrap">
-      <table id="trades-table">
-        <thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Reason</th></tr></thead>
-        <tbody></tbody>
+<section class="grid-2">
+  <article class="card tbl">
+    <header><span class="title">Recent signals</span><span class="sub mono" id="sig-meta">—</span></header>
+    <div class="tblwrap">
+      <table id="signals">
+        <thead><tr>
+          <th>TS</th><th class="r">P LONG</th><th class="r">P SHORT</th>
+          <th>REGIME</th><th>GATE</th><th>SIG</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="empty">awaiting first prediction…</td></tr></tbody>
       </table>
     </div>
-  </section>
-  <section>
-    <h2>Recent Signals</h2>
-    <div class="table-wrap">
-      <table id="signals-table">
-        <thead><tr><th>Time</th><th>P(Long)</th><th>P(Short)</th><th>Regime</th><th>Gate</th><th>Sig</th></tr></thead>
-        <tbody></tbody>
+  </article>
+  <article class="card tbl">
+    <header><span class="title">Fills</span><span class="sub mono" id="fl-meta">—</span></header>
+    <div class="tblwrap">
+      <table id="fills">
+        <thead><tr>
+          <th>TS</th><th>KIND</th><th>SIDE</th>
+          <th class="r">PRICE</th><th class="r">QTY</th><th class="r">FEE</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="empty">no fills yet</td></tr></tbody>
       </table>
     </div>
-  </section>
-</div>
+  </article>
+</section>
 
-<footer id="footer">
-  <span id="footer-bundle">Bundle: —</span>
-  <span id="footer-started">Started: —</span>
-  <span id="footer-heartbeat">Heartbeat: —</span>
+<footer class="foot">
+  <div>
+    <span class="lbl">BUNDLE</span>
+    <span id="bundle-hash" class="mono dim">—</span>
+    <span class="sep">/</span>
+    <span class="lbl">RUNS</span>
+    <span id="runs-count" class="mono">—</span>
+    <span class="sep">/</span>
+    <span class="lbl">STARTED</span>
+    <span id="run-started" class="mono dim">—</span>
+  </div>
+  <div class="discl">
+    <span class="lbl">DISCLAIMER</span>
+    <span class="dim">paper trading · fills simulated · no real capital at risk</span>
+  </div>
 </footer>
 
 <script src="app.js"></script>
