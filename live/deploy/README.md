@@ -11,19 +11,27 @@ manualmente creando ogni servizio dal Dashboard di Render.
 
 ---
 
-## Step 1: Creare il Database Postgres
+## Step 1: Database Supabase (gratuito)
 
-1. Vai su https://dashboard.render.com
-2. **New + → PostgreSQL**
-3. Compila:
-   - **Name:** `live-trader-db`
-   - **Database:** `live_trader`
-   - **User:** lascia default
-   - **Plan:** Free ($0/mese)
-4. **Create Database**
-5. Aspetta che lo stato diventi **Available** (~2 minuti)
-6. Copia la **Internal Database URL** (la stringa che inizia con `postgresql://`)
-   — la userai dopo
+1. Vai su https://supabase.com → **Start your project**
+2. Crea un account (GitHub or email)
+3. Crea un nuovo **Organization** (es. personale)
+4. **New project**:
+   - **Name:** `live-trader`
+   - **Database Password:** genera una password forte (salvala)
+   - **Region:** `Frankfurt (eu-central-1)` (più vicino a Binance)
+   - **Pricing Plan:** **Free**
+5. Clicca **Create new project** (attendi ~2 minuti)
+
+### Ottenere la connection string
+
+1. Vai a **Project Settings → Database**
+2. Sezione **Connection string → URI**
+3. Seleziona **Node.js** (mostra la stringa `postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres`)
+4. Copia l'intera stringa — questa sarà la tua `DATABASE_URL`
+
+> **Nota:** Usa la porta `5432` (connessione diretta), NON `6543` (pgbouncer).
+> Il trader usa una connessione persistente — il pooler di Supabase non serve.
 
 ---
 
@@ -109,7 +117,8 @@ In alternativa, usa un cron-job gratuito (es. cron-job.org) che pinga
 
 | Problema | Causa | Fix |
 |---|---|---|
-| `connection refused` | DATABASE_URL sbagliata | Usa **Internal** DB URL (non External) |
+| `connection refused` | DATABASE_URL sbagliata | Usa la stringa URI da Supabase (porta 5432, non 6543) |
+| `SSL connection required` | Supabase richiede SSL | La stringa URI di Supabase include già `?sslmode=require` |
 | Trader non parte | Bundle mancante | Esegui `freeze_strategy` e pusha su git |
 | Dashboard mostra "—" | Web service in sleep | Apri l'URL del servizio per risvegliarlo |
 | Build fallisce | psycopg2 non trovato | Verifica che requirements.txt contenga `psycopg2-binary` |
