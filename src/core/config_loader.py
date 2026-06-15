@@ -129,6 +129,22 @@ class HtfStrategyV2Cfg:
 
 
 @dataclass
+class OrderflowCfg:
+    exchange: str
+    lookback_days: int
+    aggtrades_lookback_days: int
+    use_klines_flow: bool
+    use_aggtrades: bool
+    use_funding: bool
+    use_basis: bool
+    large_trade_k: float
+    roll_window: int
+    cpcv_groups: int
+    cpcv_test: int
+    dsr_n_trials: int
+
+
+@dataclass
 class PipelineConfig:
     data: DataCfg
     model: ModelCfg
@@ -140,6 +156,7 @@ class PipelineConfig:
     htf_model: Optional[HtfModelCfg] = None
     htf_backtest: Optional[HtfBacktestCfg] = None
     htf_strategy_v2: Optional[HtfStrategyV2Cfg] = None
+    orderflow: Optional[OrderflowCfg] = None
 
     @classmethod
     def load(cls, path: str | Path = "config.ini") -> "PipelineConfig":
@@ -274,6 +291,25 @@ class PipelineConfig:
                 size_by_confidence=cfg.getboolean("HTF_STRATEGY_V2", "size_by_confidence", fallback=True),
             )
 
+        # ---- Optional order-flow (Phase 1) -------------------------------- #
+        orderflow = None
+        if cfg.has_section("ORDERFLOW"):
+            orderflow = OrderflowCfg(
+                exchange=cfg.get("ORDERFLOW", "exchange", fallback="binanceusdm"),
+                lookback_days=cfg.getint("ORDERFLOW", "lookback_days", fallback=180),
+                aggtrades_lookback_days=cfg.getint("ORDERFLOW", "aggtrades_lookback_days", fallback=90),
+                use_klines_flow=cfg.getboolean("ORDERFLOW", "use_klines_flow", fallback=True),
+                use_aggtrades=cfg.getboolean("ORDERFLOW", "use_aggtrades", fallback=True),
+                use_funding=cfg.getboolean("ORDERFLOW", "use_funding", fallback=True),
+                use_basis=cfg.getboolean("ORDERFLOW", "use_basis", fallback=True),
+                large_trade_k=cfg.getfloat("ORDERFLOW", "large_trade_k", fallback=5.0),
+                roll_window=cfg.getint("ORDERFLOW", "roll_window", fallback=60),
+                cpcv_groups=cfg.getint("ORDERFLOW", "cpcv_groups", fallback=6),
+                cpcv_test=cfg.getint("ORDERFLOW", "cpcv_test", fallback=2),
+                dsr_n_trials=cfg.getint("ORDERFLOW", "dsr_n_trials", fallback=20),
+            )
+
         return cls(data=data, model=model, backtest=backtest, report=report, raw=cfg,
                    htf_data=htf_data, htf_features=htf_features, htf_model=htf_model,
-                   htf_backtest=htf_backtest, htf_strategy_v2=htf_strategy_v2)
+                   htf_backtest=htf_backtest, htf_strategy_v2=htf_strategy_v2,
+                   orderflow=orderflow)
