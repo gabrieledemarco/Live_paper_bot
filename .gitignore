@@ -8,6 +8,8 @@ data/parquet/
 data/ohlcv/
 data/ohlcv_um/
 data/orderflow/
+data/comparison_ohlcv/
+data/comparison_funding/
 models_store/*.joblib
 reports/charts/**/*.png
 reports/charts/**/*.json
